@@ -1,0 +1,8 @@
+# dsh-multi-folder bundle patch.
+#
+# Applied as a profile patch layer after every in-box bundle. Inserts the
+# plugin row at the profile root; later layers (or the user's own
+# cordis.patch.yml) can address it by id with the last write winning.
+- insert:
+    - id: dsh-multi-folder
+      name: 'dsh-multi-folder'

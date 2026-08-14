@@ -1,0 +1,60 @@
+{
+  "name": "dsh-multi-folder",
+  "version": "0.1.0",
+  "description": "DeepSeek Harness plugin: secondary working directories for a project. The agent keeps the primary workspace as cwd, gains equal write/exec permissions on configured secondary directories under workspace-write mode, and is notified of configuration changes at the next message boundary.",
+  "keywords": [
+    "dsh-plugin",
+    "dsh",
+    "deepseek-harness",
+    "multi-folder",
+    "secondary-workspace",
+    "workspace"
+  ],
+  "license": "MIT",
+  "author": "Yutong Zou <yutong.zou.24@alumni.ucl.ac.uk> (https://github.com/AngelosZou)",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AngelosZou/dsh-multi-folder.git"
+  },
+  "bugs": {
+    "url": "https://github.com/AngelosZou/dsh-multi-folder/issues"
+  },
+  "homepage": "https://github.com/AngelosZou/dsh-multi-folder#readme",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": {
+      "default": "./lib/index.js"
+    },
+    "./client": {
+      "default": "./lib/client.js"
+    },
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "cordis.patch.yml",
+    "SECURITY.md",
+    "docs"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-api-gateway",
+        "@deepseek-ai/dsh-api-remotes",
+        "@deepseek-ai/dsh-client-runtime"
+      ]
+    }
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1"
+  }
+}
