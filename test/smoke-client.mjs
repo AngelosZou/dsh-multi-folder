@@ -1,7 +1,9 @@
 /**
  * Client-half smoke test: load the hand-written factory bundle under a fake
  * `window.__ModuleLoader__`, materialize the factory with a React shim, apply
- * against a mock ctx, and drive the header button -> panel -> command flow.
+ * against a mock ctx, and drive the header button -> panel -> command flow,
+ * plus the session-creation page flows (hero launcher + workspace-mode panel
+ * over the sessionless `multiFolder/*` RPC channel).
  * Run: node test/smoke-client.mjs
  */
 import { readFileSync } from 'node:fs';
@@ -12,6 +14,16 @@ globalThis.window = {
     load(record) {
       captured = record;
     },
+  },
+};
+// Fake DOM: the conversation root reports the hero phase via data-phase.
+globalThis.document = {
+  body: {},
+  querySelector(selector) {
+    if (selector === '[data-phase]') {
+      return { getAttribute: (name) => (name === 'data-phase' ? 'hero' : null) };
+    }
+    return null;
   },
 };
 
@@ -46,11 +58,21 @@ const moduleExport = captured.factory((spec) => {
 
 assert(moduleExport.name === 'dsh-multi-folder', 'client plugin name');
 assert(Array.isArray(moduleExport.inject) && moduleExport.inject.includes('slots'), 'client inject list');
+assert(moduleExport.inject.includes('connection') && moduleExport.inject.includes('sessions'), 'client injects connection + sessions');
 assert(typeof moduleExport.apply === 'function', 'client apply exported');
 
 // Mock ctx ---------------------------------------------------------------
-const calls = [];
-const registrations = new Map(); // slotName -> { options, component }
+const calls = []; // remote.commands.execute calls
+const rpcCalls = []; // connection.rpc.call calls
+const registrations = new Map(); // slotName -> [{ options, component }]
+
+const registerEntry = (options, component) => {
+  const list = registrations.get(options.name) ?? [];
+  list.push({ options, component });
+  registrations.set(options.name, list);
+};
+const entryBy = (slotName, id) =>
+  (registrations.get(slotName) ?? []).find((entry) => entry.options.id === id);
 
 const ctx = {
   slots: {
@@ -58,7 +80,7 @@ const ctx = {
       return callback();
     },
     register(options, component) {
-      registrations.set(options.name, { options, component });
+      registerEntry(options, component);
       return () => {};
     },
   },
@@ -88,25 +110,58 @@ const ctx = {
       },
     },
   },
+  connection: {
+    rpc: {
+      async call(channel, endpoint, payload) {
+        rpcCalls.push({ channel, endpoint, args: payload.args });
+        if (endpoint === 'multiFolder/list') {
+          return { ok: true, value: { workspace: 'C:\\workspaces\\primary', dirs: ['C:\\workspaces\\secondary'] } };
+        }
+        if (endpoint === 'multiFolder/add' || endpoint === 'multiFolder/remove' || endpoint === 'multiFolder/set') {
+          return { ok: true, value: { workspace: 'C:\\workspaces\\primary', dirs: ['C:\\workspaces\\secondary'], changed: true } };
+        }
+        return { ok: false, error: { message: 'unknown endpoint ' + endpoint } };
+      },
+    },
+  },
   workspaces: {
     async pickDirectory() {
       return 'C:\\workspaces\\secondary';
+    },
+    list: {
+      subscribe() { return () => {}; },
+      getSnapshot() {
+        return {
+          items: [
+            { workspaceId: 'w1', path: 'C:\\workspaces\\primary', sessionIds: ['session-blank'] },
+          ],
+        };
+      },
+    },
+  },
+  sessions: {
+    list: {
+      subscribe() { return () => {}; },
+      getSnapshot() {
+        return { current: 'session-blank', byId: { 'session-blank': { cwd: 'C:\\workspaces\\primary' } } };
+      },
     },
   },
 };
 
 moduleExport.apply(ctx);
 
-assert(registrations.has('conversation.session.header.actions'), 'header action registered');
-assert(registrations.has('shell.overlay'), 'overlay registered');
-assert(registrations.get('shell.overlay').options.id === 'multi-folder', 'overlay registration id');
+assert(entryBy('conversation.session.header.actions', 'multi-folder'), 'header action registered');
+assert(entryBy('shell.overlay', 'multi-folder'), 'overlay panel registered');
+assert(entryBy('shell.overlay', 'multi-folder-hero'), 'hero launcher registered');
+assert(entryBy('conversation.hero.workspaceExtras', 'multi-folder'), 'upstream hero slot registration present');
 
 // Drive the header button -------------------------------------------------
 const renderDeep = (el) => {
-  while (el !== null && typeof el.type === 'function') el = el.type(el.props);
+  while (el !== null && el !== undefined && typeof el.type === 'function') el = el.type(el.props);
   return el;
 };
-const header = registrations.get('conversation.session.header.actions');
+const header = entryBy('conversation.session.header.actions', 'multi-folder');
 const element = renderDeep(header.component({ sessionId: 'session-x' }));
 assert(element.type === 'button', 'header renders a button');
 assert(calls.length === 0, 'no command before click');
@@ -120,7 +175,7 @@ assert(calls[0].sessionId === 'session-x', 'session id passed to remote');
 assert(calls[0].line === '/multi-folder list', 'list line');
 
 // Panel render after refresh ----------------------------------------------
-const panel = registrations.get('shell.overlay');
+const panel = entryBy('shell.overlay', 'multi-folder');
 const panelElement = renderDeep(panel.component({}));
 assert(panelElement !== null, 'panel open after click');
 const panelText = JSON.stringify(panelElement);
@@ -143,6 +198,10 @@ let panelAfter = renderDeep(panel.component({}));
 const buttons = [];
 const walk = (node) => {
   if (node === null || node === undefined) return;
+  if (Array.isArray(node)) {
+    node.forEach(walk);
+    return;
+  }
   if (node.type === 'button') buttons.push(node);
   if (Array.isArray(node.children)) node.children.forEach(walk);
   if (node.props && node.props.children !== undefined) {
@@ -183,5 +242,75 @@ refreshBtn.props.onClick(); // forced refresh now fails
 await tick();
 const errPanel = renderDeep(panel.component({}));
 assert(JSON.stringify(errPanel).includes('boom'), 'error surfaced in panel');
+
+// ---- Session-creation page flows (hero) ----------------------------------
+// Close the session panel, then mount the hero launcher: the fake document
+// reports data-phase="hero" and the mock session list points at the blank
+// session of C:\workspaces\primary.
+closeButton.props.onClick();
+
+const heroEntry = entryBy('shell.overlay', 'multi-folder-hero');
+renderDeep(heroEntry.component({})); // mounts the effect: syncHero runs
+const heroButton = renderDeep(heroEntry.component({}));
+assert(heroButton !== null && heroButton.type === 'button', 'hero launcher visible in hero phase');
+
+const rpcBefore = rpcCalls.length;
+heroButton.props.onClick();
+await tick();
+assert(rpcCalls.length === rpcBefore + 1, 'workspace-mode open lists through the shared RPC channel');
+assert(rpcCalls[rpcCalls.length - 1].channel === '/api', 'RPC channel is /api');
+assert(rpcCalls[rpcCalls.length - 1].endpoint === 'multiFolder/list', 'list endpoint');
+assert(rpcCalls[rpcCalls.length - 1].args.workspace === 'C:\\workspaces\\primary', 'list keyed by workspace path');
+
+const workspacePanel = renderDeep(panel.component({}));
+assert(workspacePanel !== null, 'panel opens in workspace mode');
+assert(JSON.stringify(workspacePanel).includes('C:\\\\workspaces\\\\primary'), 'workspace shown in panel');
+assert(JSON.stringify(workspacePanel).includes('secondary'), 'dirs listed from the remote value');
+
+// Workspace-mode mutations: add via pickDirectory -> multiFolder/add.
+buttons.length = 0;
+walk(workspacePanel);
+const wsAddButton = buttons.find((b) => JSON.stringify(b.children || []).includes('添加目录'));
+assert(wsAddButton, 'workspace-mode add button present');
+const rpcBeforeAdd = rpcCalls.length;
+wsAddButton.props.onClick();
+await new Promise((r) => setTimeout(r, 20));
+assert(rpcCalls.length > rpcBeforeAdd, 'workspace-mode add fired through the RPC channel');
+assert(rpcCalls[rpcCalls.length - 1].endpoint === 'multiFolder/add', 'add endpoint');
+assert(rpcCalls[rpcCalls.length - 1].args.workspace === 'C:\\workspaces\\primary', 'add keyed by workspace path');
+assert(rpcCalls[rpcCalls.length - 1].args.path === 'C:\\workspaces\\secondary', 'add path argument');
+
+// Workspace-mode remove.
+const afterAddPanel = renderDeep(panel.component({}));
+buttons.length = 0;
+walk(afterAddPanel);
+const wsRemoveButton = buttons.find((b) => JSON.stringify(b.children || []).includes('移除'));
+assert(wsRemoveButton, 'workspace-mode remove button present');
+const rpcBeforeRemove = rpcCalls.length;
+wsRemoveButton.props.onClick();
+await tick();
+assert(rpcCalls.length === rpcBeforeRemove + 1 && rpcCalls[rpcCalls.length - 1].endpoint === 'multiFolder/remove', 'remove endpoint');
+
+// Upstream hero chip (B1): opens the same workspace-mode panel.
+const heroChipEntry = entryBy('conversation.hero.workspaceExtras', 'multi-folder');
+const chip = renderDeep(heroChipEntry.component({ workspacePath: 'C:\\workspaces\\primary' }));
+assert(chip !== null && chip.type === 'button', 'hero chip renders');
+const rpcBeforeChip = rpcCalls.length;
+chip.props.onClick();
+await tick();
+assert(rpcCalls.length === rpcBeforeChip || rpcCalls[rpcCalls.length - 1].endpoint === 'multiFolder/list', 'hero chip reuses cached workspace list (or refreshes)');
+assert(renderDeep(panel.component({})) !== null, 'hero chip opens the workspace panel');
+
+// RPC failure surfaces in workspace mode.
+ctx.connection.rpc.call = async () => ({ ok: false, error: { message: 'rpc-boom' } });
+const wsErrEl = renderDeep(panel.component({}));
+buttons.length = 0;
+walk(wsErrEl);
+const wsRefreshBtn = buttons.find((b) => JSON.stringify(b.children || []).includes('刷新'));
+assert(wsRefreshBtn, 'workspace-mode refresh button present');
+wsRefreshBtn.props.onClick();
+await tick();
+const wsErrPanel = renderDeep(panel.component({}));
+assert(JSON.stringify(wsErrPanel).includes('rpc-boom'), 'workspace-mode RPC failure surfaced');
 
 console.log('smoke-client: all assertions passed');

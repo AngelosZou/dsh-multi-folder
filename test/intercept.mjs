@@ -105,12 +105,25 @@ const ctx = {
     }
     return undefined;
   },
+  provide(name, value) {
+    // The sessionless `multiFolder` service; exercised by smoke-host.mjs.
+    return () => {};
+  },
   inject(names, callback) {
     if (names.includes('commands')) {
       return callback({
         commands: {
           register(def) {
             commandDef = def;
+            return () => {};
+          },
+        },
+      });
+    }
+    if (names.includes('typert')) {
+      return callback({
+        typert: {
+          register() {
             return () => {};
           },
         },

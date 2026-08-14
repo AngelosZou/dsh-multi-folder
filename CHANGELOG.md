@@ -2,7 +2,19 @@
 
 All notable changes to this project are documented in this file.
 
-## [0.1.0] — unreleased
+## [0.1.1] — 2026-08-15
+
+### Added
+
+- Session-creation page configuration: a sessionless `multiFolder/*` remote API
+  (registered through `ctx.typert.register` with hand-written `src-json`
+  descriptors, sharing one validated core with the `/multi-folder` command) lets
+  the new-session screen read and edit per-workspace directories before any
+  session exists. Client entries: a fixed hero launcher (`shell.overlay`, driven
+  by the conversation root's `data-phase` attribute) plus an inline chip for the
+  upstream `conversation.hero.workspaceExtras` slot (see docs/upstream-hero-slot.md).
+
+## [0.1.0] — 2026-08-14
 
 ### Added
 

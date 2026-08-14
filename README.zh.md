@@ -13,12 +13,13 @@
 - 在 **Workspace Write** 模式下，Agent 对配置的副工作目录拥有与主工作目录**同等的读取、写入、编辑与命令执行权限**——实现方式是重定向会话自身的沙箱策略根，因此每种模式语义都自然保持（`read-only` 依旧拒绝、`workspace-write` 放行、`danger-full-access` 放行）；
 - 目录列表**注入系统提示词**，每次组装按会话求值；
 - 配置变更通过**不打断的消息队列**通知 Agent——在下一次消息边界（用户发送或工具调用结束）送达，且**仅在目录集合实际变化时**发送；
+- **会话开始前即可配置**：会话创建页（新会话界面）提供「多工作目录」入口，通过**无会话远程 API**（`multiFolder/*` 端点）读写同一份 per-workspace 配置——无需 session id；
 - **不新增任何工具**：改动全部位于框架级（工具流水线拦截）与 UI 级（会话级头部入口）。
 
 ## 环境要求
 
 - Node.js >= 20
-- 由 `@deepseek-ai/dsh-base` + `@deepseek-ai/dsh-web-app` 组成的 DSH profile（或提供 `fs`、`sandboxPolicy`、`systemPrompt`、`commands`、`shell`、`shellEnv` 及标准 Web 客户端模块的等价组合）。
+- 由 `@deepseek-ai/dsh-base` + `@deepseek-ai/dsh-web-app` 组成的 DSH profile
 
 ## 安装
 
@@ -32,7 +33,7 @@ dsh plugin --profile web add dsh-multi-folder
 
 ## 使用
 
-会话头部出现「多工作目录」按钮，打开面板即可：
+会话头部出现「多工作目录」按钮；**会话创建页**也有入口（新会话界面右下角的浮动按钮；当上游 DSH 声明 `conversation.hero.workspaceExtras` 插槽后，还会在工作区选择器旁显示内联 chip）。打开面板即可：
 
 | 操作 | 行为 |
 | ---- | ---- |
@@ -58,15 +59,16 @@ Agent 无需任何额外操作：`read` / `glob` / `grep` 随处可用；`write`
 - **提示词注入**——一个有序 `systemPrompt` 段落，text provider 每次组装按会话求值，仅为配置了副目录的会话渲染。
 - **通知**——命令处理器仅在目录集合实际变化时置位 pending notice；`agent/pre-step`（前置注入进入批次）与 `tools/post-execute`（附加为 `additionalContexts`）两个通道中先触发者消费——均使用框架原生的插件来源 `notice` 上下文。
 - **配置与安全边界**——per-workspace 配置存储于 Agent 沙箱之外的宿主自有目录（`<DSH_HOME>/storages/multi-folder/<workspace-key>.json`）。对配置文件的任何直接 `write`/`edit` 都会收到显式拒绝——**Agent 永远无法自我授予目录，配置权仅属于用户**。详见 [SECURITY.md](SECURITY.md)。
-- **客户端**——手写维护的 factory bundle（`window.__ModuleLoader__.load`），无需构建工具链；面板经 Remote BFF（`ctx.remote.commands.execute`）驱动宿主。
+- **无会话远程 API**——经 `ctx.typert.register` 注册 `multiFolder` 命名空间（手写 `src-json` 描述符），并以普通对象服务 `multiFolder` 提供；`list`/`add`/`remove`/`set` 以工作区**路径**为键，与 `/multi-folder` 命令共享同一套校验核心，因此会话尚未建立时创建页也能直接配置。
+- **客户端**——手写维护的 factory bundle（`window.__ModuleLoader__.load`），无需构建工具链；面板经两条通道驱动宿主：会话内走 Remote BFF（`ctx.remote.commands.execute`），无会话端点走共享 `/api` RPC 通道（`ctx.connection.rpc.call`）。
 
 ## 目录结构
 
 | 路径 | 作用 |
 | ---- | ---- |
 | `cordis.patch.yml` | profile patch 层，插入 `dsh-multi-folder` 行 |
-| `lib/index.js` | 宿主插件：配置存储、工具流水线拦截、提示词注入、双通道通知、`/multi-folder` 命令 |
-| `lib/client.js` | 客户端插件（factory bundle）：会话头部按钮 + 覆盖层面板 |
+| `lib/index.js` | 宿主插件：配置存储、工具流水线拦截、提示词注入、双通道通知、`/multi-folder` 命令、无会话 `multiFolder/*` 远程 API |
+| `lib/client.js` | 客户端插件（factory bundle）：会话头部按钮 + 覆盖层面板 + 会话创建页入口（hero 浮动按钮 / 上游 hero chip） |
 | `test/` | 免 DSH 运行时的行为测试（见开发） |
 | `docs/` | 设计与分析文档 |
 
@@ -75,7 +77,7 @@ Agent 无需任何额外操作：`read` / `glob` / `grep` 随处可用；`write`
 零构建步骤：宿主半边为纯 ESM，`lib/client.js` 为 DSH client-modules 格式的手写 factory bundle。测试直接用 Node 运行：
 
 ```bash
-node test/smoke-host.mjs    # 宿主 apply 冒烟
+node test/smoke-host.mjs    # 宿主 apply 冒烟 + 远程 API 行为
 node test/intercept.mjs     # 拦截 / 命令 / 通知行为
 node test/smoke-client.mjs  # 客户端 bundle 与面板流程（React shim）
 ```
@@ -85,6 +87,7 @@ node test/smoke-client.mjs  # 客户端 bundle 与面板流程（React shim）
 ## 文档
 
 - [docs/design.md](docs/design.md) — 架构与安全模型（英文）
+- [docs/upstream-hero-slot.md](docs/upstream-hero-slot.md) — 上游 `conversation.hero.workspaceExtras` 插槽改动（B1）与插件的对接方式（英文）
 
 ## 参与贡献
 

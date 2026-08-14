@@ -14,8 +14,8 @@ agent informed. No new tools are added.
 
 | Half | File | Role |
 | ---- | ---- | ---- |
-| Host | `lib/index.js` | Config store, tool-pipeline interception, prompt section, notifications, `/multi-folder` command |
-| Client | `lib/client.js` | Session-header button + overlay panel; drives the host through the Remote BFF |
+| Host | `lib/index.js` | Config store, tool-pipeline interception, prompt section, notifications, `/multi-folder` command, sessionless `multiFolder/*` remote API |
+| Client | `lib/client.js` | Session-header button + overlay panel; session-creation page entry (hero launcher + upstream hero chip), both driving the host through the Remote BFF / shared RPC channel |
 
 The package declares both faces: `dsh.bundle.patch` (the host row inserted by
 `cordis.patch.yml`) and `dsh.client` (the web bundle at `exports["./client"]`).
@@ -67,10 +67,60 @@ at apply time can yield `undefined` when the provider row activates later. There
 
 - Canonical location: `<DSH_HOME>/storages/multi-folder/<workspace-key>.json`
   (`DSH_HOME` falls back to `~/.dsh`), i.e. **outside every agent sandbox root**.
-- Writes happen only from the command handler (user-initiated) with an explicit
+- Writes happen only from user-initiated flows (the `/multi-folder` command
+  handler and the `multiFolder/*` remote endpoints) with an explicit
   `workspace-write` policy rooted at the config directory.
 - A per-process cache keyed by normalized workspace path hydrates lazily (on
   `agent/created`, `agent/pre-step`, and `tools/execute`).
+- One shared **core** (`coreList` / `coreAdd` / `coreRemove` / `coreSet`)
+  implements validation, canonicalization, sanitization, cache write-through,
+  and persistence. The command channel and the remote channel both call it, so
+  the security surface stays identical on both. Core errors carry bare
+  messages; each channel adds its own `multi-folder: ` prefix.
+
+## Host: sessionless remote API
+
+The session-creation page has no session (and no `sessionId`), so the
+agent-scoped `commands/execute` remote cannot serve it. Instead the plugin
+opens its own **sessionless** endpoints on the shared `/api` RPC channel:
+
+- A **plain-object service** is registered with `ctx.provide('multiFolder', api)`.
+  The object carries the gateway-visible binding
+  `typertRemote = { service, serviceKey: 'multiFolder', namespace: 'multiFolder' }`
+  (frozen), which is exactly what the gateway's `validateBinding` expects.
+- A **hand-written Typert contribution** is registered through
+  `ctx.inject(['typert'], (t) => t.typert.register(REMOTE_CONTRIBUTION))` —
+  the sanctioned manual path documented by `dsh-typert-loader` ("Manual
+  `ctx.typert.register()` remains available for contributions that do not use
+  a `./typert` artifact"). All four descriptors use `src-json` codecs (no zod
+  schemas needed) with `invocation: { kind: 'direct' }`:
+
+  | Endpoint | Parameters (wire) | Result |
+  | -------- | ----------------- | ------ |
+  | `multiFolder/list` | `workspace` | `{ workspace, dirs, changed: false }` |
+  | `multiFolder/add` | `workspace`, `path` | `{ workspace, dirs, changed }` |
+  | `multiFolder/remove` | `workspace`, `path` | `{ workspace, dirs, changed }` |
+  | `multiFolder/set` | `workspace`, `dirs` | `{ workspace, dirs, changed }` |
+
+  The workspace argument is a **path**, not a session id; the client derives
+  it from the workspaces store (`WorkspaceView.path`). Business errors throw
+  and arrive at the browser as `{ ok: false, error: { message } }`.
+- Gateway mechanics verified against `dsh-api-gateway` + `dsh-typert-registry`:
+  `resolveDescriptor` finds the endpoint in `typert.local` (claimable on
+  `/api`), direct invocation resolves the receiver through
+  `ctx.get('multiFolder')` (global shared store), `validateBinding` reads the
+  frozen `typertRemote` property, and src-json parameters tolerate omitted
+  wire fields. Both registrations are owned by the plugin fiber, so unloading
+  the plugin withdraws them together.
+- No notice is armed on the remote channel: pre-session changes have no agent
+  to notify. The session created afterwards hydrates the cache on
+  `agent/created` and the prompt section renders the directories in the very
+  first assembly.
+- Note: `src-json` descriptors are boundary-validated only for JSON safety
+  (the gateway's `assertJsonValue`), not schema-validated. The service itself
+  must therefore treat every argument as hostile — the shared core already
+  does (type checks, absolute-path requirement, canonicalization, sanitization,
+  primary-workspace exclusion).
 
 ## Host: prompt injection and notifications
 
@@ -95,21 +145,44 @@ window.__ModuleLoader__.load({
 })
 ```
 
-- `inject: ['remote', 'remote.commands', 'slots', 'workspaces']`; the package's
+- `inject: ['remote', 'remote.commands', 'slots', 'workspaces', 'connection', 'sessions']`; the package's
   `dsh.client.inject` lists the packages providing them
   (`@deepseek-ai/dsh-api-gateway`, `@deepseek-ai/dsh-api-remotes`,
-  `@deepseek-ai/dsh-client-runtime`).
-- UI registrations: `conversation.session.header.actions` (session-scoped button) and
-  `shell.overlay` (root-scoped panel). One module-level store is shared by both.
-- Host communication: `ctx.remote.commands.execute(sessionId, line)`. The return value
-  is the RPC envelope `{ ok, value }` where `value` is the `CommandExecution`; command
-  result text carries a `[MF:JSON] {…}` line the panel parses for structured state.
-- Session switch: a `React.useEffect` on `sessionId` re-points the open panel to the
-  current session, reusing the per-session cache (no command row) or refreshing.
-- Per-session caching keeps pure reads (`list`) off the conversation: the command runs
-  only on first open per session or on explicit refresh; mutations return their data
-  directly and remain visible change records (command lifecycle events are log-only
-  and never reach the model).
+  `@deepseek-ai/dsh-client-connection`, `@deepseek-ai/dsh-client-runtime`).
+- UI registrations: `conversation.session.header.actions` (session-scoped button),
+  `shell.overlay` panel, `shell.overlay` hero launcher (root-scoped, fixed
+  position), and `conversation.hero.workspaceExtras` (upstream slot; see
+  below). One module-level store is shared by all of them.
+- Host communication, two channels:
+  - session mode: `ctx.remote.commands.execute(sessionId, line)`. The return
+    value is the RPC envelope `{ ok, value }` where `value` is the
+    `CommandExecution`; command result text carries a `[MF:JSON] {…}` line the
+    panel parses for structured state.
+  - workspace mode (session-creation page): `ctx.connection.rpc.call('/api',
+    'multiFolder/<op>', { args })` against the sessionless remote endpoints.
+    The panel runs in either mode according to how it was opened; mutations
+    and refreshes route per mode, and both modes share the same row/error UI.
+- Session switch: a `React.useEffect` on `sessionId` re-points the open panel
+  to the current session (reusing the per-session cache) — this also folds a
+  workspace-mode panel back into session mode once the first message creates
+  the session.
+- Caching: per-session cache (`sessionCache`) keeps pure reads off the
+  conversation; per-workspace cache (`workspaceCache`) plays the same role for
+  the sessionless channel.
+- Hero (session-creation page) support:
+  - The **hero launcher** (`shell.overlay` entry, `multi-folder-hero`)
+    subscribes to `sessions.list` + `workspaces.list` and observes the
+    conversation root's `data-phase="hero"` attribute (MutationObserver on
+    `document.body`). While the hero is visible it renders a fixed-position
+    「多工作目录」 button; the workspace path is derived from the current
+    (blank) session's `WorkspaceView.path`, falling back to `SessionSummary.cwd`.
+  - Clicking it opens the panel in workspace mode; without a selected
+    workspace the panel shows the "pick a workspace first" hint.
+  - The **hero chip** registers into `conversation.hero.workspaceExtras` via
+    `slots.inject`, which waits for the declaration: with an upstream DSH
+    build that declares the slot, the chip renders inline beside the workspace
+    picker; without one, the registration is a harmless no-op and the fixed
+    launcher covers the page.
 
 ## Known limitations
 
@@ -123,11 +196,28 @@ window.__ModuleLoader__.load({
   secondary directories are passed through to the default pipeline.
 - The `/multi-folder` command lifecycle rows (`command/run`, `command/done`) are
   visible in the conversation UI by framework design; they are log-only and never
-  reach the model.
+  reach the model. Workspace-mode (session-creation page) operations avoid them
+  entirely by using the sessionless remote channel.
+- The hero launcher relies on the conversation root's `data-phase="hero"`
+  attribute and the `sessions.list`/`workspaces.list` snapshot shapes — DOM and
+  client-runtime internals rather than documented APIs. They are guarded
+  defensively (missing services or DOM degrade to "launcher hidden"), and the
+  upstream `conversation.hero.workspaceExtras` slot (see
+  [upstream-hero-slot.md](upstream-hero-slot.md)) is the long-term surface.
+- The `multiFolder/*` endpoints use hand-written `src-json` Typert descriptors
+  registered through `ctx.typert.register`. `src-json` gives JSON-safety
+  boundary checks, not schema validation; the shared core performs all
+  business validation server-side. DSH versions that change the Typert
+  registry contract would need this contribution revisited (the tests assert
+  the descriptor shape).
 
 ## Tests
 
 `test/smoke-host.mjs`, `test/intercept.mjs`, and `test/smoke-client.mjs` run without
 the DSH runtime using mock services and a React shim. They cover interception,
 canonicalization, the config guard, both notification channels, notice
-gating, command flows, and the panel's session-switch/caching behavior.
+gating, command flows, the panel's session-switch/caching behavior, the
+sessionless remote contribution shape and behavior (list/add/set/remove,
+idempotence, sanitization, error prefixing, cross-channel cache coherence),
+and the hero/workspace-mode client flows (launcher visibility, RPC routing,
+workspace-mode mutations and error surfacing).

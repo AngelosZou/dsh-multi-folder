@@ -7,8 +7,11 @@
 granted the session. The design enforces four boundaries:
 
 1. **User-only configuration.** Secondary directories can only be added or removed by
-   the user through the UI panel or the `/multi-folder` slash command. The agent has no
-   tool, command, or file path through which it can change the configuration.
+   the user, through the session-header panel, the session-creation page panel, or
+   the `/multi-folder` slash command. The two panels are backed by a sessionless
+   `multiFolder/*` remote API on the trusted browser→host RPC channel — endpoints
+   that exist only for the web UI and are never exposed as agent tools. The agent
+   has no tool, command, or file path through which it can change the configuration.
 
 2. **Host-owned configuration store.** Per-workspace configuration lives in
    `<DSH_HOME>/storages/multi-folder/<workspace-key>.json` — outside every agent
