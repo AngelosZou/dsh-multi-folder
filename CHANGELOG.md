@@ -4,6 +4,28 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.1.3] — 2026-08-15
+
+### Fixed
+
+- Background `pwsh`/`bash` runs (`run_in_background: true`) whose `workdir` lands in
+  a secondary directory were passed through to the default pipeline, which re-rooted
+  the sandbox at the PRIMARY workspace — writes inside the secondary directory were
+  denied (`[sandbox: file access denied under workspace-write mode]`) even though
+  the identical command succeeded in the foreground. The interceptor now registers
+  these runs with the generic jobs runtime (`ctx.jobs`) under the same re-rooted
+  policy as foreground runs, mirroring the shipped shell tools: `kind` = tool name,
+  `owner` = calling agent, streamed reads shaped for `job_output` (loss/spill and
+  sandbox markers), and a terminal outcome in the `completed`/`killed` vocabulary.
+
+### Changed
+
+- The injected prompt section now states explicitly that shell tools must pass
+  `workdir` inside a secondary directory for both foreground and background runs.
+- `docs/design.md`: interception walkthrough and Known limitations updated for the
+  background-job path (escalation remains on the default pipeline, rooted at the
+  primary workspace).
+
 ## [0.1.2] — 2026-08-15
 
 ### Changed

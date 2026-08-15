@@ -35,13 +35,19 @@ A listener on the `tools/execute` around-dispatch waterfall handles `write`, `ed
 4. If the canonical path is inside a configured secondary directory, execute the
    operation directly with `{ ...standingPolicy, workspaceRoot: <secondary dir> }`:
    - `write`/`edit` → `fs.writeText` / `fs.editText`;
-   - `pwsh`/`bash` → `shell.resolve({ command, workdir, dshEnv, sandboxPolicy })` +
-     `shell.run`, with the canonical workdir so the confinement root and the process
-     cwd agree exactly.
+   - `pwsh`/`bash`, foreground → `shell.resolve({ command, workdir, dshEnv,
+     sandboxPolicy })` + `shell.run`, with the canonical workdir so the confinement
+     root and the process cwd agree exactly;
+   - `pwsh`/`bash`, background (`run_in_background: true`) → the same re-rooted
+     request registered through the generic jobs runtime (`ctx.jobs`) exactly like
+     the shipped shell tools (`kind` = tool name, `owner` = calling agent, streamed
+     reads shaped for `job_output` with sandbox markers, terminal outcome in the
+     `completed`/`killed` vocabulary). A caller-aborted call falls through to the
+     default pipeline, which raises the canonical abort error.
    The result carries the same canonical value/content shapes as the shipped tools, so
    downstream presentation keeps working.
 5. Anything else — unknown tools, paths outside every secondary directory, escalation
-   arguments (`sandbox_permissions`), `run_in_background`, missing optional services,
+   arguments (`sandbox_permissions`), missing optional services (`shell`, `jobs`),
    or any error — falls through to `next()` and the default pipeline.
 
 **Why mode parity is free:** the mode field of the standing policy is never touched.
@@ -206,8 +212,17 @@ window.__ModuleLoader__.load({
   observation domain.
 - `presentationMeta` is not computed on the short-circuit path; tool cards fall back to
   their default presentation.
-- `run_in_background` and `sandbox_permissions` escalation on `pwsh`/`bash` calls in
-  secondary directories are passed through to the default pipeline.
+- `sandbox_permissions` escalation on `pwsh`/`bash` calls in secondary directories is
+  passed through to the default pipeline, which re-roots the escalated run at the
+  PRIMARY workspace — escalation never widens a secondary root. (Background runs are
+  NOT passed through: they register with `ctx.jobs` under the same re-rooted policy
+  as foreground runs.)
+- The interceptor registers a background `pwsh`/`bash` job whenever `ctx.jobs` is
+  available; it cannot read the shipped shell tools' per-tool
+  `enableRunInBackground: false` config, so a deployment that disables background
+  execution would still serve secondary-dir background jobs. Deployments that
+  disable background execution should also disable this plugin's shell interception
+  or accept that exception.
 - The `/multi-folder` command lifecycle rows (`command/run`, `command/done`) are
   visible in the conversation UI by framework design; they are log-only and never
   reach the model. Workspace-mode (session-creation page) operations avoid them

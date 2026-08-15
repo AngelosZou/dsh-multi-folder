@@ -19,6 +19,11 @@ const savedConfigs = [];
 const writes = [];
 const edits = [];
 const shellRuns = [];
+const shellStarts = [];
+const jobStarts = [];
+let startedHooks = null;
+let jobsAvailable = true;
+let fakeProc = null;
 let commandDef = null;
 const sections = [];
 
@@ -98,10 +103,24 @@ const ctx = {
             sandbox: { mode: 'workspace-write', denied: false, enforcement: 'partial' },
           };
         },
+        start(spec) {
+          shellStarts.push(spec);
+          return fakeProc;
+        },
       };
     }
     if (name === 'shellEnv') {
       return { collect() { return { DSH_TEST: '1' }; } };
+    }
+    if (name === 'jobs') {
+      if (!jobsAvailable) return undefined;
+      return {
+        start(spec) {
+          jobStarts.push(spec);
+          startedHooks = spec.run();
+          return spec.kind + '-' + jobStarts.length;
+        },
+      };
     }
     return undefined;
   },
@@ -280,6 +299,102 @@ const pwshPrimary = await execWrite(
   nextPassthrough,
 );
 assert(pwshPrimary === 'PASSTHROUGH', 'primary workdir passes through');
+
+// 10a. background pwsh with workdir inside the secondary dir -> intercepted,
+//      registered with the jobs runtime under the SAME re-rooted policy.
+fakeProc = {
+  status: 'completed',
+  exitCode: 0,
+  signal: null,
+  done: Promise.resolve(),
+  sandbox: { mode: 'workspace-write', denied: false, enforcement: 'partial' },
+  readOutput() { return { delta: 'bg ok\r\n', lossy: false }; },
+  kill() { return true; },
+};
+const bgPwsh = await execWrite(
+  { name: 'pwsh', arguments: { command: 'echo bg', workdir: SEC, run_in_background: true }, agent, signal: undefined },
+  nextPassthrough,
+);
+assert(bgPwsh !== 'PASSTHROUGH' && bgPwsh.isError === false, 'background pwsh intercepted');
+assert(shellRuns.length === 1, 'background does not use shell.run');
+assert(shellStarts.length === 1 && shellStarts[0].request.sandboxPolicy.workspaceRoot === SEC, 'background policy re-rooted');
+assert(shellStarts[0].request.workdir === SEC, 'background workdir canonical');
+assert(shellStarts[0].request.dshEnv && shellStarts[0].request.dshEnv.DSH_TEST === '1', 'background dshEnv collected');
+assert(jobStarts.length === 1 && jobStarts[0].kind === 'pwsh' && jobStarts[0].label === 'echo bg', 'job identity');
+assert(jobStarts[0].owner === agent, 'job owner is the calling agent');
+assert(bgPwsh.value.kind === 'background' && bgPwsh.value.jobId === 'pwsh-1', 'background value shape');
+assert(bgPwsh.content[0].text === 'started background job pwsh-1', 'background content text');
+
+// hooks: terminal outcome + clean streamed read.
+assert(startedHooks && typeof startedHooks.cancel === 'function' && typeof startedHooks.readOutput === 'function', 'job hooks shape');
+const bgOutcome = await startedHooks.done;
+assert(bgOutcome.status === 'completed' && bgOutcome.detail === 'exit code: 0', 'job outcome completed');
+assert(startedHooks.readOutput() === 'bg ok\r\n', 'clean read passes through');
+
+// sandbox-denial markers surface on streamed reads.
+fakeProc = {
+  ...fakeProc,
+  sandbox: { mode: 'workspace-write', denied: true, enforcement: 'partial' },
+  readOutput() { return { delta: 'x\r\n', lossy: false }; },
+};
+const bgDenied = await execWrite(
+  { name: 'pwsh', arguments: { command: 'echo d', workdir: SEC, run_in_background: true }, agent, signal: undefined },
+  nextPassthrough,
+);
+assert(bgDenied !== 'PASSTHROUGH' && bgDenied.value.jobId === 'pwsh-2', 'denied background still intercepted');
+assert(startedHooks.readOutput() === 'x\r\n[sandbox: file access denied under workspace-write mode]', 'denial marker on read');
+
+// lossy reads carry the spill notice; killed processes settle as killed.
+fakeProc = {
+  ...fakeProc,
+  sandbox: undefined,
+  readOutput() { return { delta: 'y', lossy: true, stdoutSpillPath: 'C:\\spill\\out.txt' }; },
+};
+await execWrite(
+  { name: 'pwsh', arguments: { command: 'echo l', workdir: SEC, run_in_background: true }, agent, signal: undefined },
+  nextPassthrough,
+);
+assert(startedHooks.readOutput() === 'y\n[some output was dropped from memory; full output: C:\\spill\\out.txt]', 'lossy read notice');
+fakeProc = {
+  ...fakeProc,
+  status: 'killed',
+  exitCode: null,
+  signal: 'SIGTERM',
+  done: Promise.resolve(),
+  sandbox: undefined,
+  readOutput() { return { delta: '', lossy: false }; },
+};
+await execWrite(
+  { name: 'pwsh', arguments: { command: 'echo k', workdir: SEC, run_in_background: true }, agent, signal: undefined },
+  nextPassthrough,
+);
+const killedOutcome = await startedHooks.done;
+assert(killedOutcome.status === 'killed' && killedOutcome.detail === 'signal: SIGTERM', 'killed outcome carries signal');
+
+// relative background workdir canonicalizes before matching (bash path too).
+fakeProc = { ...fakeProc, status: 'completed', exitCode: 0, signal: null, done: Promise.resolve() };
+const bgRel = await execWrite(
+  { name: 'bash', arguments: { command: 'echo rel', workdir: '..\\secondary', run_in_background: true }, agent, signal: undefined },
+  nextPassthrough,
+);
+assert(bgRel !== 'PASSTHROUGH' && bgRel.value.jobId === 'bash-5', 'relative background workdir intercepted');
+assert(shellStarts[shellStarts.length - 1].request.workdir === SEC, 'relative background workdir canonicalized');
+
+// background with primary workdir -> passthrough.
+const bgPrimary = await execWrite(
+  { name: 'pwsh', arguments: { command: 'echo x', workdir: WS, run_in_background: true }, agent, signal: undefined },
+  nextPassthrough,
+);
+assert(bgPrimary === 'PASSTHROUGH', 'background primary workdir passes through');
+
+// background without the jobs service -> passthrough (default pipeline owns it).
+jobsAvailable = false;
+const bgNoJobs = await execWrite(
+  { name: 'pwsh', arguments: { command: 'echo x', workdir: SEC, run_in_background: true }, agent, signal: undefined },
+  nextPassthrough,
+);
+assert(bgNoJobs === 'PASSTHROUGH', 'background without jobs service passes through');
+jobsAvailable = true;
 
 // 11. Escalation args -> passthrough (default pipeline owns escalation).
 const escalated = await execWrite(
