@@ -6,6 +6,9 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Node.js >= 20](https://img.shields.io/badge/Node.js-%3E%3D20-brightgreen)](https://nodejs.org/)
+[![npm version](https://img.shields.io/npm/v/dsh-multi-folder)](https://www.npmjs.com/package/dsh-multi-folder)
+[![GitHub issues](https://img.shields.io/github/issues/AngelosZou/dsh-multi-folder)](https://github.com/AngelosZou/dsh-multi-folder/issues)
+[![Awesome DSH Plugin](https://awesome-dsh-plugin.com/badge.svg)](https://awesome-dsh-plugin.com)
 
 A [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) plugin bundle that gives one project (workspace) a set of **secondary working directories**:
 
@@ -13,8 +16,7 @@ A [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) plugin bun
 - Under **Workspace Write** mode the agent gains the **same read / write / edit / execute permissions** on the configured secondary directories as on the primary workspace — enforced by re-rooting the session's own sandbox policy, so every mode keeps its semantics (`read-only` still denies, `workspace-write` allows, `danger-full-access` allows).
 - The directory list is **injected into the system prompt** and re-rendered per session assembly.
 - Configuration changes notify the agent through a **non-interrupting message queue** — delivered at the next message boundary (user send or tool-call end), and **only when the directory set actually changed**.
-- Configurable **before the session starts**: the session-creation page (new-session screen) offers a Multi-folder entry (「多工作目录」 in the Chinese UI) that reads and edits the same per-workspace configuration through a **sessionless remote API** (`multiFolder/*` endpoints) — no session id required.
-- **Localized UI.** The button, panel, and creation-page entries follow the DSH locale (the browser language or the Language setting in Settings): "Multi-folder" in English, 「多工作目录」 in Chinese.
+- Configurable **before the session starts**: the session-creation page (new-session screen) offers a Multi-folder entry that reads and edits the same per-workspace configuration through a **sessionless remote API** (`multiFolder/*` endpoints) — no session id required.
 - **No new tools.** Everything is a framework-level change (tool-pipeline interception) plus a UI-level change (a session-scoped header entry).
 
 ## Requirements
@@ -34,7 +36,7 @@ Then **restart the DSH backend** (host composition loads at process start) and *
 
 ## Usage
 
-A Multi-folder button (「多工作目录」 in the Chinese UI) appears in the session header, and a second entry appears on the **session-creation page** (fixed launcher in the bottom-right corner while the new-session screen is shown; an inline chip beside the workspace picker once the upstream `conversation.hero.workspaceExtras` slot is available). The panel lets you:
+A Multi-folder button appears in the session header, and a second entry appears on the **session-creation page** (fixed launcher in the bottom-right corner while the new-session screen is shown; an inline chip beside the workspace picker once the upstream `conversation.hero.workspaceExtras` slot is available). The panel lets you:
 
 | Action | Behavior |
 | ------ | -------- |

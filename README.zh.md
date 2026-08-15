@@ -6,6 +6,9 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Node.js >= 20](https://img.shields.io/badge/Node.js-%3E%3D20-brightgreen)](https://nodejs.org/)
+[![npm version](https://img.shields.io/npm/v/dsh-multi-folder)](https://www.npmjs.com/package/dsh-multi-folder)
+[![GitHub issues](https://img.shields.io/github/issues/AngelosZou/dsh-multi-folder)](https://github.com/AngelosZou/dsh-multi-folder/issues)
+[![Awesome DSH Plugin](https://awesome-dsh-plugin.com/badge.svg)](https://awesome-dsh-plugin.com)
 
 一个 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 插件 bundle，为一个 Project（工作区）提供一组**副工作目录**：
 
@@ -14,7 +17,6 @@
 - 目录列表**注入系统提示词**，每次组装按会话求值；
 - 配置变更通过**不打断的消息队列**通知 Agent——在下一次消息边界（用户发送或工具调用结束）送达，且**仅在目录集合实际变化时**发送；
 - **会话开始前即可配置**：会话创建页（新会话界面）提供「多工作目录」入口（英文界面显示 "Multi-folder"），通过**无会话远程 API**（`multiFolder/*` 端点）读写同一份 per-workspace 配置——无需 session id；
-- **界面本地化**：按钮、面板与创建页入口跟随 DSH 的语言设置（浏览器语言或设置中的 Language 选项）：英文界面显示 "Multi-folder"，中文界面显示「多工作目录」。
 - **不新增任何工具**：改动全部位于框架级（工具流水线拦截）与 UI 级（会话级头部入口）。
 
 ## 环境要求
