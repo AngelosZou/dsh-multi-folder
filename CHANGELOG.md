@@ -4,6 +4,8 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.1.2] — 2026-08-15
+
 ### Changed
 
 - Client UI is now localized through `@deepseek-ai/dsh-client-locale`: the
