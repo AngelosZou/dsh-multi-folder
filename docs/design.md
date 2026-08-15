@@ -145,14 +145,28 @@ window.__ModuleLoader__.load({
 })
 ```
 
-- `inject: ['remote', 'remote.commands', 'slots', 'workspaces', 'connection', 'sessions']`; the package's
+- `inject: ['remote', 'remote.commands', 'slots', 'workspaces', 'connection', 'sessions', 'locale']`; the package's
   `dsh.client.inject` lists the packages providing them
   (`@deepseek-ai/dsh-api-gateway`, `@deepseek-ai/dsh-api-remotes`,
-  `@deepseek-ai/dsh-client-connection`, `@deepseek-ai/dsh-client-runtime`).
+  `@deepseek-ai/dsh-client-connection`, `@deepseek-ai/dsh-client-locale`,
+  `@deepseek-ai/dsh-client-runtime`).
 - UI registrations: `conversation.session.header.actions` (session-scoped button),
   `shell.overlay` panel, `shell.overlay` hero launcher (root-scoped, fixed
   position), and `conversation.hero.workspaceExtras` (upstream slot; see
   below). One module-level store is shared by all of them.
+- **Localization (zh / en).** All client copy goes through
+  `@deepseek-ai/dsh-client-locale` (always composed by the standard web
+  profile). The bundle registers a `multi-folder` dictionary namespace with
+  `ctx.effect(() => locale.register(NS, { zh, en }))` — the locale service
+  enforces bilingual balance, and the effect ties the dictionaries to the
+  plugin fiber. Every slot registration declares `locale: 'multi-folder'`,
+  so the renderer synthesizes the `t` seat on component props and
+  re-renders mounted outlets on locale switch; list-entry `label`s are
+  thunks (`() => t('label')`) that `resolveSlotLabel` re-evaluates per read,
+  so registration-time text follows the active locale without
+  re-registering. The active locale is the browser language or the user's
+  Language preference in Settings; the English UI reads "Multi-folder", the
+  Chinese UI keeps 「多工作目录」.
 - Host communication, two channels:
   - session mode: `ctx.remote.commands.execute(sessionId, line)`. The return
     value is the RPC envelope `{ ok, value }` where `value` is the

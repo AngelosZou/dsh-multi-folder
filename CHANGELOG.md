@@ -2,6 +2,19 @@
 
 All notable changes to this project are documented in this file.
 
+## [Unreleased]
+
+### Changed
+
+- Client UI is now localized through `@deepseek-ai/dsh-client-locale`: the
+  bundle registers a `multi-folder` dictionary namespace (zh + en, bilingual
+  balance enforced by the locale service), declares `locale:` on every slot
+  registration (the renderer supplies the `t` seat and re-renders on locale
+  switch), renders all panel/header/hero copy through it, and turns every
+  list-entry `label` into a thunk that follows the active locale. The UI
+  shows "Multi-folder" in English and 「多工作目录」 in Chinese, following the
+  browser language or the Language preference in Settings.
+
 ## [0.1.1] — 2026-08-15
 
 ### Added

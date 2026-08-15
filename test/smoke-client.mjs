@@ -59,6 +59,7 @@ const moduleExport = captured.factory((spec) => {
 assert(moduleExport.name === 'dsh-multi-folder', 'client plugin name');
 assert(Array.isArray(moduleExport.inject) && moduleExport.inject.includes('slots'), 'client inject list');
 assert(moduleExport.inject.includes('connection') && moduleExport.inject.includes('sessions'), 'client injects connection + sessions');
+assert(moduleExport.inject.includes('locale'), 'client injects the locale service');
 assert(typeof moduleExport.apply === 'function', 'client apply exported');
 
 // Mock ctx ---------------------------------------------------------------
@@ -74,7 +75,40 @@ const registerEntry = (options, component) => {
 const entryBy = (slotName, id) =>
   (registrations.get(slotName) ?? []).find((entry) => entry.options.id === id);
 
+// Locale service mock (mirrors @deepseek-ai/dsh-client-locale's surface the
+// bundle uses: register(ns, dicts) + bind(ns) -> t(key, params)). The real
+// service enforces bilingual balance and resolves the active locale.
+const localeDicts = new Map();
+let activeLocale = 'zh';
+const locale = {
+  register(ns, dicts) {
+    localeDicts.set(ns, dicts);
+    return () => localeDicts.delete(ns);
+  },
+  bind(ns) {
+    return (key, params) => {
+      const dicts = localeDicts.get(ns) ?? {};
+      const dict = dicts[activeLocale] ?? dicts.zh ?? {};
+      let text = dict[key] !== undefined ? dict[key] : key;
+      if (params) text = text.replace(/\{(\w+)\}/g, (m, name) => (name in params ? String(params[name]) : m));
+      return text;
+    };
+  },
+  setLocale(id) {
+    activeLocale = id;
+  },
+};
+/** The framework renderer hands entries declared with `locale:` a `t` seat;
+ *  the test simulates that by passing it in props. */
+const t = locale.bind('multi-folder');
+const withT = (props) => Object.assign({}, props ?? {}, { t });
+
 const ctx = {
+  effect(fn) {
+    const disposer = fn();
+    return () => { if (typeof disposer === 'function') disposer(); };
+  },
+  locale,
   slots: {
     inject(slotName, callback) {
       return callback();
@@ -156,13 +190,31 @@ assert(entryBy('shell.overlay', 'multi-folder'), 'overlay panel registered');
 assert(entryBy('shell.overlay', 'multi-folder-hero'), 'hero launcher registered');
 assert(entryBy('conversation.hero.workspaceExtras', 'multi-folder'), 'upstream hero slot registration present');
 
+// Locale: the bundle registered a bilingual `multi-folder` namespace, and
+// every list-entry label is a thunk resolving through the active locale.
+const dicts = localeDicts.get('multi-folder');
+assert(dicts && dicts.zh && dicts.en, 'bilingual dictionaries registered');
+assert(
+  Object.keys(dicts.zh).sort().join('\n') === Object.keys(dicts.en).sort().join('\n'),
+  'zh/en key sets match (bilingual balance)',
+);
+for (const [slotName, id] of [
+  ['conversation.session.header.actions', 'multi-folder'],
+  ['shell.overlay', 'multi-folder'],
+  ['shell.overlay', 'multi-folder-hero'],
+  ['conversation.hero.workspaceExtras', 'multi-folder'],
+]) {
+  assert(typeof entryBy(slotName, id).options.label === 'function', `label is a thunk (${slotName})`);
+  assert(entryBy(slotName, id).options.locale === 'multi-folder', `registration declares locale (${slotName})`);
+}
+
 // Drive the header button -------------------------------------------------
 const renderDeep = (el) => {
   while (el !== null && el !== undefined && typeof el.type === 'function') el = el.type(el.props);
   return el;
 };
 const header = entryBy('conversation.session.header.actions', 'multi-folder');
-const element = renderDeep(header.component({ sessionId: 'session-x' }));
+const element = renderDeep(header.component(withT({ sessionId: 'session-x' })));
 assert(element.type === 'button', 'header renders a button');
 assert(calls.length === 0, 'no command before click');
 
@@ -176,7 +228,7 @@ assert(calls[0].line === '/multi-folder list', 'list line');
 
 // Panel render after refresh ----------------------------------------------
 const panel = entryBy('shell.overlay', 'multi-folder');
-const panelElement = renderDeep(panel.component({}));
+const panelElement = renderDeep(panel.component(withT({})));
 assert(panelElement !== null, 'panel open after click');
 const panelText = JSON.stringify(panelElement);
 assert(panelText.includes('secondary'), 'panel lists the secondary dir');
@@ -184,17 +236,17 @@ assert(panelText.includes('secondary'), 'panel lists the secondary dir');
 // Close + reopen -----------------------------------------------------------
 const closeButton = panelElement.children[0].children[1];
 closeButton.props.onClick();
-assert(renderDeep(panel.component({})) === null, 'panel closed');
+assert(renderDeep(panel.component(withT({}))) === null, 'panel closed');
 
 element.props.onClick();
 element.props.onClick(); // toggles closed again
-assert(renderDeep(panel.component({})) === null, 'panel toggled closed');
+assert(renderDeep(panel.component(withT({}))) === null, 'panel toggled closed');
 assert(calls.length === 1, 'reopen from cache issues no list command');
 
 // Add-directory flow (pickDirectory -> add command) --------------------------
 element.props.onClick();
 await tick();
-let panelAfter = renderDeep(panel.component({}));
+let panelAfter = renderDeep(panel.component(withT({})));
 const buttons = [];
 const walk = (node) => {
   if (node === null || node === undefined) return;
@@ -217,13 +269,27 @@ await new Promise((r) => setTimeout(r, 20));
 assert(calls.length > before, 'add command fired after pickDirectory');
 assert(calls[calls.length - 1].line.includes('add'), 'add line shape');
 
+// ---- Locale support: copy and labels follow the active locale ------------
+locale.setLocale('en');
+const headerEntry = entryBy('conversation.session.header.actions', 'multi-folder');
+assert(headerEntry.options.label() === 'Multi-folder', 'slot label thunk resolves English');
+const enHeader = renderDeep(header.component(withT({ sessionId: 'session-x' })));
+assert(JSON.stringify(enHeader).includes('Multi-folder ▾'), 'header button copy in English');
+const enPanel = renderDeep(panel.component(withT({})));
+const enText = JSON.stringify(enPanel);
+assert(enText.includes('Add directory') && enText.includes('Remove') && enText.includes('Refresh'), 'panel actions in English');
+assert(enText.includes('Workspace:'), 'panel workspace line in English');
+assert(enText.includes('command-execution rights'), 'panel footnote in English');
+locale.setLocale('zh');
+assert(headerEntry.options.label() === '多工作目录', 'slot label thunk resolves Chinese again');
+
 // Session switch: re-rendering the header for a different session (same
 // component instance, new props) must switch the open panel's content to
 // that session and refresh from the Host. (Panel is still open here.)
-renderDeep(header.component({ sessionId: 'session-y' })); // effect fires on sessionId change
+renderDeep(header.component(withT({ sessionId: 'session-y' }))); // effect fires on sessionId change
 await tick();
 assert(calls.length > before && calls[calls.length - 1].sessionId === 'session-y', 'refresh fired for the new session');
-const switchedPanel = renderDeep(panel.component({}));
+const switchedPanel = renderDeep(panel.component(withT({})));
 assert(switchedPanel !== null, 'panel stays open across the switch');
 assert(JSON.stringify(switchedPanel).includes('secondary'), 'panel content switched to the new session');
 
@@ -233,14 +299,14 @@ ctx.remote.commands.execute = async () => {
 };
 element.props.onClick(); // opens session-x panel from cache (no fetch, no error yet)
 await tick();
-let errPanelEl = renderDeep(panel.component({}));
+let errPanelEl = renderDeep(panel.component(withT({})));
 buttons.length = 0;
 walk(errPanelEl);
 const refreshBtn = buttons.find((b) => JSON.stringify(b.children || []).includes('刷新'));
 assert(refreshBtn, 'refresh button present');
 refreshBtn.props.onClick(); // forced refresh now fails
 await tick();
-const errPanel = renderDeep(panel.component({}));
+const errPanel = renderDeep(panel.component(withT({})));
 assert(JSON.stringify(errPanel).includes('boom'), 'error surfaced in panel');
 
 // ---- Session-creation page flows (hero) ----------------------------------
@@ -250,8 +316,8 @@ assert(JSON.stringify(errPanel).includes('boom'), 'error surfaced in panel');
 closeButton.props.onClick();
 
 const heroEntry = entryBy('shell.overlay', 'multi-folder-hero');
-renderDeep(heroEntry.component({})); // mounts the effect: syncHero runs
-const heroButton = renderDeep(heroEntry.component({}));
+renderDeep(heroEntry.component(withT({}))); // mounts the effect: syncHero runs
+const heroButton = renderDeep(heroEntry.component(withT({})));
 assert(heroButton !== null && heroButton.type === 'button', 'hero launcher visible in hero phase');
 
 const rpcBefore = rpcCalls.length;
@@ -262,7 +328,7 @@ assert(rpcCalls[rpcCalls.length - 1].channel === '/api', 'RPC channel is /api');
 assert(rpcCalls[rpcCalls.length - 1].endpoint === 'multiFolder/list', 'list endpoint');
 assert(rpcCalls[rpcCalls.length - 1].args.workspace === 'C:\\workspaces\\primary', 'list keyed by workspace path');
 
-const workspacePanel = renderDeep(panel.component({}));
+const workspacePanel = renderDeep(panel.component(withT({})));
 assert(workspacePanel !== null, 'panel opens in workspace mode');
 assert(JSON.stringify(workspacePanel).includes('C:\\\\workspaces\\\\primary'), 'workspace shown in panel');
 assert(JSON.stringify(workspacePanel).includes('secondary'), 'dirs listed from the remote value');
@@ -281,7 +347,7 @@ assert(rpcCalls[rpcCalls.length - 1].args.workspace === 'C:\\workspaces\\primary
 assert(rpcCalls[rpcCalls.length - 1].args.path === 'C:\\workspaces\\secondary', 'add path argument');
 
 // Workspace-mode remove.
-const afterAddPanel = renderDeep(panel.component({}));
+const afterAddPanel = renderDeep(panel.component(withT({})));
 buttons.length = 0;
 walk(afterAddPanel);
 const wsRemoveButton = buttons.find((b) => JSON.stringify(b.children || []).includes('移除'));
@@ -293,24 +359,24 @@ assert(rpcCalls.length === rpcBeforeRemove + 1 && rpcCalls[rpcCalls.length - 1].
 
 // Upstream hero chip (B1): opens the same workspace-mode panel.
 const heroChipEntry = entryBy('conversation.hero.workspaceExtras', 'multi-folder');
-const chip = renderDeep(heroChipEntry.component({ workspacePath: 'C:\\workspaces\\primary' }));
+const chip = renderDeep(heroChipEntry.component(withT({ workspacePath: 'C:\\workspaces\\primary' })));
 assert(chip !== null && chip.type === 'button', 'hero chip renders');
 const rpcBeforeChip = rpcCalls.length;
 chip.props.onClick();
 await tick();
 assert(rpcCalls.length === rpcBeforeChip || rpcCalls[rpcCalls.length - 1].endpoint === 'multiFolder/list', 'hero chip reuses cached workspace list (or refreshes)');
-assert(renderDeep(panel.component({})) !== null, 'hero chip opens the workspace panel');
+assert(renderDeep(panel.component(withT({}))) !== null, 'hero chip opens the workspace panel');
 
 // RPC failure surfaces in workspace mode.
 ctx.connection.rpc.call = async () => ({ ok: false, error: { message: 'rpc-boom' } });
-const wsErrEl = renderDeep(panel.component({}));
+const wsErrEl = renderDeep(panel.component(withT({})));
 buttons.length = 0;
 walk(wsErrEl);
 const wsRefreshBtn = buttons.find((b) => JSON.stringify(b.children || []).includes('刷新'));
 assert(wsRefreshBtn, 'workspace-mode refresh button present');
 wsRefreshBtn.props.onClick();
 await tick();
-const wsErrPanel = renderDeep(panel.component({}));
+const wsErrPanel = renderDeep(panel.component(withT({})));
 assert(JSON.stringify(wsErrPanel).includes('rpc-boom'), 'workspace-mode RPC failure surfaced');
 
 console.log('smoke-client: all assertions passed');

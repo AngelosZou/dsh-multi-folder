@@ -34,6 +34,8 @@ Host changes need a backend restart; client changes are picked up on page refres
 ## Before submitting
 
 - Keep the three test files green and extend them for new behavior.
+- When changing client copy, keep the zh and en dictionaries in
+  `lib/client.js` in sync — the key sets must match (bilingual balance).
 - Update `CHANGELOG.md` under the current unreleased section.
 - Update `docs/design.md` if invariants change (especially anything touching the
   security boundary described in `SECURITY.md`).

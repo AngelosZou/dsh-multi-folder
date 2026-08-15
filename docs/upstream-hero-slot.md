@@ -78,16 +78,22 @@ above is only authorized once it is listed):
 
 ## 4. Plugin side (already implemented)
 
-`lib/client.js` registers into the slot the moment it is declared:
+`lib/client.js` registers into the slot the moment it is declared. The entry
+declares the plugin's `multi-folder` locale namespace, so the chip renders
+through the framework `t` seat and its `label` is a thunk that follows the
+active locale (English: "Multi-folder", Chinese: 「多工作目录」):
 
 ```js
 slots.inject('conversation.hero.workspaceExtras', function () {
   return slots.register(
-    { name: 'conversation.hero.workspaceExtras', id: 'multi-folder', order: 30, label: '多工作目录' },
+    { name: 'conversation.hero.workspaceExtras', id: 'multi-folder', order: 30, label: () => t('label'), locale: NS },
     function (props) { return React.createElement(HeroChip, props); },
   );
 });
 ```
+
+(`NS` is the plugin's `multi-folder` namespace and `t` its bound translator —
+see the localization section of [design.md](design.md).)
 
 `HeroChip` prefers the owner-supplied `props.workspacePath` and falls back to
 the store-derived hero workspace. It opens the same overlay panel in workspace
@@ -115,6 +121,7 @@ bundle; the same change there is three touchpoints:
 - Unit: the plugin's `test/smoke-client.mjs` registers and drives `HeroChip`
   with a mock owner share (`workspacePath`), asserting the panel opens in
   workspace mode and reuses the per-workspace cache.
-- Manual: with the patched build, the 「多工作目录」 chip renders in the hero
-  workspace row between the preset chip and the composer; clicking it lists
-  the workspace's secondary directories before any message is sent.
+- Manual: with the patched build, the Multi-folder chip (「多工作目录」 in the
+  Chinese UI) renders in the hero workspace row between the preset chip and
+  the composer; clicking it lists the workspace's secondary directories
+  before any message is sent.
