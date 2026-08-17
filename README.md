@@ -56,6 +56,17 @@ Equivalent slash command for the user:
 
 The agent needs nothing extra: `read` / `glob` / `grep` work everywhere, and `write` / `edit` / `pwsh` / `bash` are intercepted and re-rooted automatically when the target path (or `workdir`) falls inside a configured secondary directory.
 
+## Permission model
+
+Each confined command runs under **exactly ONE writable root** — the workspace root the call is re-rooted to (the Windows ACL runner grants a single workspace write SID per process tree). Consequences:
+
+- A command whose cwd stays the **primary workspace cannot create files inside a secondary directory**. `git -C <secondary> commit`, `cd <secondary>` inside a script, `git clone <url> <secondary>`, or absolute-path writes all fail with an OS-level `Permission denied` (e.g. `fatal: Unable to create '.../.git/index.lock': Permission denied`).
+- Symmetrically, a command re-rooted to a secondary directory cannot write to the **primary workspace** (or another secondary directory) in the same invocation.
+- **Rule for file-creating commands: set `workdir` to the directory the command writes into.** For git, run the command from inside the repository (pass `workdir` pointing at it) instead of using `git -C` from the primary workspace.
+- Reads are unrestricted and need no `workdir`.
+
+When a shell run ends in such a denial and references a configured secondary directory, the plugin attaches a short diagnostic hint to the tool result explaining the workdir fix.
+
 ## How it works
 
 - **Interception** — a listener on the `tools/execute` around-dispatch waterfall short-circuits `write` / `edit` / `pwsh` / `bash` calls whose resolved path (or `workdir`) lands inside a configured secondary directory, and executes them with the session's standing sandbox policy **re-rooted to that directory** (`{ ...standingPolicy, workspaceRoot: secondaryDir }`). The mode itself is untouched, which is what gives every sandbox mode its identical primary-workspace semantics for free. Paths are canonicalized through `fs.resolve` + `processPath` before matching, so `..`, symlinks, and case differences behave correctly.

@@ -206,6 +206,23 @@ window.__ModuleLoader__.load({
 
 ## Known limitations
 
+- Each confined command runs under exactly ONE writable root: the Windows ACL
+  runner grants a single workspace write SID per process tree (`--write-sid`
+  must match `--workspace`), and re-rooting replaces the root. A command whose
+  cwd stays the primary workspace therefore cannot create files inside a
+  secondary directory — `git -C <secondary> commit`, `cd <secondary>` inside a
+  script, `git clone <url> <secondary>`, and absolute-path writes fail with an
+  OS-level `Permission denied` (`fatal: Unable to create '.../.git/index.lock':
+  Permission denied`) that carries no sandbox marker. Symmetrically, a command
+  re-rooted to a secondary directory cannot write the primary workspace in the
+  same invocation. The injected prompt states the workdir rule, and a
+  `tools/post-execute` heuristic attaches a workdir-fix hint when a failed
+  `pwsh`/`bash` run both mentions a configured secondary directory and ends in
+  a denial (`permission denied` / `access … denied` / `is denied` / `eacces`;
+  the plugin's own `[sandbox: …]` marker lines are excluded from the scan).
+  Lifting this to real multi-root confinement needs an upstream change
+  (`SandboxExecutionPolicy` carrying extra write roots and the ACL runner
+  accepting several workspace write SIDs).
 - Intercepted secondary-directory writes bypass the fs observation policy: they emit
   no `fs/observed` event and do not participate in the `fs/write-intent` intent guard.
   This is deliberate — secondary directories sit outside the primary workspace's

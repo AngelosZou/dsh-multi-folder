@@ -56,6 +56,17 @@ dsh plugin --profile web add dsh-multi-folder
 
 Agent 无需任何额外操作：`read` / `glob` / `grep` 随处可用；`write` / `edit` / `pwsh` / `bash` 在路径（或 `workdir`）落入副目录时自动拦截并以该目录为沙箱根执行。
 
+## 权限模型
+
+每条受沙箱约束的命令只拥有**唯一一个可写根**——即本次调用被换根到的那个目录（Windows ACL runner 为每个进程树只授予一个工作区写 SID）。由此：
+
+- cwd 停留在**主工作区**的命令**不能在副目录创建文件**。`git -C <副目录> commit`、脚本内 `cd <副目录>`、`git clone <url> <副目录>`、按绝对路径写文件等都会以操作系统级 `Permission denied` 失败（例如 `fatal: Unable to create '.../.git/index.lock': Permission denied`）。
+- 对称地，被换根到副目录的命令在同一次调用中也**不能写主工作区**（或另一个副目录）。
+- **创建文件的命令必须把 `workdir` 设为它要写入的目录。** 对 git 而言，请进入仓库目录执行（`workdir` 指向该仓库），而不是从主工作区用 `git -C`。
+- 读操作不受限制，无需 `workdir`。
+
+当 shell 命令以这类拒绝失败且命令引用了已配置的副目录时，插件会在工具结果后附带一条简短的诊断提示，说明 workdir 的修正方式。
+
 ## 工作原理
 
 - **拦截**——监听 `tools/execute` 环绕分派瀑布，对解析路径（或 `workdir`）落在副目录内的 `write` / `edit` / `pwsh` / `bash` 调用短路，并以**换根后的会话站立策略**（`{ ...standingPolicy, workspaceRoot: secondaryDir }`）执行。模式本身不变，因此各种沙箱模式与主工作区的语义天然一致。匹配前先经 `fs.resolve` + `processPath` 规范化，`..`、符号链接与大小写差异均正确处理。

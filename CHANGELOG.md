@@ -4,6 +4,35 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.1.4] — 2026-08-17
+
+### Added
+
+- Failure diagnosis for OS-level permission denials touching secondary
+  directories: the Windows ACL runner confines each process tree to ONE writable
+  root, so a command whose cwd stays the primary workspace cannot create files
+  inside a secondary directory (`git -C <secondary> commit` fails with
+  `fatal: Unable to create '.../.git/index.lock': Permission denied`, and the
+  failure carries no sandbox marker). A `tools/post-execute` heuristic now
+  attaches a workdir-fix hint as an additional context when a failed
+  `pwsh`/`bash` run mentions a configured secondary directory and ends in a
+  denial; the symmetric case (a run re-rooted to a secondary directory denied a
+  write OUTSIDE it) gets its own hint. The plugin's `[sandbox: …]` marker lines
+  are excluded from the denial scan.
+
+### Changed
+
+- The injected prompt section now states the single-writable-root constraint
+  explicitly: file-creating commands (git included) MUST pass `workdir` inside
+  the secondary directory, and `git -C <secondary>` / `cd <secondary>` inside a
+  command launched from the primary workspace will be denied.
+- `README.md` / `README.zh.md`: new "Permission model / 权限模型" section
+  documenting the one-root-per-command rule and the diagnostic hint.
+- `docs/design.md`: Known limitations now records the single-writable-root
+  constraint, the heuristic hint, and the upstream multi-root direction
+  (extra write roots on `SandboxExecutionPolicy` + several workspace write SIDs
+  on the ACL runner).
+
 ## [0.1.3] — 2026-08-15
 
 ### Fixed

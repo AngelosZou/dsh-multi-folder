@@ -195,6 +195,9 @@ assert(writes[0].policy.mode === 'workspace-write' && writes[0].policy.workspace
 // 3. Prompt section now renders the dir.
 const text = sectionText({ agent });
 assert(text.includes(SEC), 'section lists secondary dir');
+assert(text.includes('only ONE root'), 'section warns about the single writable root');
+assert(text.includes('git -C'), 'section warns against git -C from the primary workspace');
+assert(text.includes('MUST set `workdir`'), 'section requires workdir for file-creating commands');
 
 // 4. Pre-step channel: notice prepended at the next step boundary.
 const preStep = listeners.get('agent/pre-step')[0];
@@ -227,6 +230,48 @@ const postNoChange = await postExec(
   async () => ({ kind: 'accept', content: [{ type: 'text', text: 'y' }] }),
 );
 assert(!postNoChange.additionalContexts || postNoChange.additionalContexts.length === 0, 'no notice without change');
+
+// 5c. Failure diagnosis: an OS-level permission denial on a command that
+//     references a secondary dir while confined to the primary workspace gets
+//     a workdir-fix hint attached (the reported git case: `git -C <secondary>
+//     commit` -> index.lock Permission denied).
+const denFail = await postExec(
+  { name: 'pwsh', arguments: { command: 'git -C "' + SEC + '" commit -m x', workdir: WS }, agent, signal: undefined },
+  {
+    isError: false,
+    value: { kind: 'foreground', exitCode: 128, stdout: { text: '' }, stderr: { text: "fatal: Unable to create '" + SEC + "\\.git\\index.lock': Permission denied" } },
+    content: [{ type: 'text', text: "fatal: Unable to create '" + SEC + "\\.git\\index.lock': Permission denied\n[exit code: 128]" }],
+  },
+  async () => ({ kind: 'accept', content: [{ type: 'text', text: 'x' }] }),
+);
+assert(Array.isArray(denFail.additionalContexts) && denFail.additionalContexts.length === 1, 'denial hint attached');
+assert(denFail.additionalContexts[0].content[0].text.includes('workdir'), 'hint names the workdir fix');
+assert(denFail.additionalContexts[0].content[0].text.includes(SEC), 'hint names the referenced directory');
+
+// 5d. No hint on success, and none without a secondary-dir reference.
+const noDenial = await postExec(
+  { name: 'pwsh', arguments: { command: 'git -C "' + SEC + '" status', workdir: WS }, agent, signal: undefined },
+  { isError: false, value: { exitCode: 0, stdout: { text: 'clean' }, stderr: { text: '' } }, content: [{ type: 'text', text: 'clean' }] },
+  async () => ({ kind: 'accept', content: [{ type: 'text', text: 'x' }] }),
+);
+assert(!noDenial.additionalContexts || noDenial.additionalContexts.length === 0, 'no hint on success');
+
+const noRef = await postExec(
+  { name: 'pwsh', arguments: { command: 'git commit -m x', workdir: WS }, agent, signal: undefined },
+  { isError: false, value: { exitCode: 128, stdout: { text: '' }, stderr: { text: 'fatal: Permission denied' } }, content: [{ type: 'text', text: 'fatal: Permission denied' }] },
+  async () => ({ kind: 'accept', content: [{ type: 'text', text: 'x' }] }),
+);
+assert(!noRef.additionalContexts || noRef.additionalContexts.length === 0, 'no hint without secondary reference');
+
+// 5e. Re-rooted runs (workdir inside a secondary dir) that deny a write
+//     OUTSIDE that directory get the symmetric hint.
+const revDenial = await postExec(
+  { name: 'pwsh', arguments: { command: 'Set-Content "' + WS + '\\a.txt" x', workdir: SEC }, agent, signal: undefined },
+  { isError: false, value: { exitCode: 1, stdout: { text: '' }, stderr: { text: "Access to the path '" + WS + "\\a.txt' is denied." } }, content: [{ type: 'text', text: "Access to the path '" + WS + "\\a.txt' is denied." }] },
+  async () => ({ kind: 'accept', content: [{ type: 'text', text: 'x' }] }),
+);
+assert(Array.isArray(revDenial.additionalContexts) && revDenial.additionalContexts.length === 1, 're-rooted denial hint attached');
+assert(revDenial.additionalContexts[0].content[0].text.includes('OUTSIDE'), 're-rooted hint explains the outside-root denial');
 
 // 6. write interception: short-circuit with the re-rooted policy.
 const execWrite = listeners.get('tools/execute')[0];
