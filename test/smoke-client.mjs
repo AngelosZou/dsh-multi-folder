@@ -2,8 +2,14 @@
  * Client-half smoke test: load the hand-written factory bundle under a fake
  * `window.__ModuleLoader__`, materialize the factory with a React shim, apply
  * against a mock ctx, and drive the header button -> panel -> command flow,
- * plus the session-creation page flows (hero launcher + workspace-mode panel
- * over the sessionless `multiFolder/*` RPC channel).
+ * plus the session-creation page flows (the input-dock chip, the upstream hero
+ * chip, and the fixed fallback launcher) over the sessionless `multiFolder/*`
+ * RPC channel.
+ *
+ * The `slots.inject` mock is DECLARATION-AWARE like the real service: a wait
+ * fires only while its slot is declared, and collapsing a declaration disposes
+ * the registration. That is what makes the hero-seat election testable — the
+ * page must never show two Multi-folder entries.
  * Run: node test/smoke-client.mjs
  */
 import { readFileSync } from 'node:fs';
@@ -69,11 +75,40 @@ const registrations = new Map(); // slotName -> [{ options, component }]
 
 const registerEntry = (options, component) => {
   const list = registrations.get(options.name) ?? [];
-  list.push({ options, component });
+  const entry = { options, component };
+  list.push(entry);
   registrations.set(options.name, list);
+  return () => {
+    const current = registrations.get(options.name) ?? [];
+    const at = current.indexOf(entry);
+    if (at >= 0) current.splice(at, 1);
+  };
 };
 const entryBy = (slotName, id) =>
   (registrations.get(slotName) ?? []).find((entry) => entry.options.id === id);
+
+// Declaration-aware slot mock: `inject` waits fire only for declared slots and
+// re-fire when a declaration arrives later (the real service reconciles on the
+// declaration epoch). `shell.overlay` and the session header are always
+// declared by the shell; the conversation seats are declared by the test.
+const declared = new Set(['conversation.session.header.actions', 'shell.overlay']);
+const waits = new Map(); // slotName -> [{ callback, dispose }]
+
+const declareSlot = (slotName) => {
+  if (declared.has(slotName)) return;
+  declared.add(slotName);
+  for (const wait of waits.get(slotName) ?? []) {
+    if (wait.dispose === undefined) wait.dispose = wait.callback();
+  }
+};
+const collapseSlot = (slotName) => {
+  if (!declared.has(slotName)) return;
+  declared.delete(slotName);
+  for (const wait of waits.get(slotName) ?? []) {
+    if (typeof wait.dispose === 'function') wait.dispose();
+    wait.dispose = undefined;
+  }
+};
 
 // Locale service mock (mirrors @deepseek-ai/dsh-client-locale's surface the
 // bundle uses: register(ns, dicts) + bind(ns) -> t(key, params)). The real
@@ -111,11 +146,21 @@ const ctx = {
   locale,
   slots: {
     inject(slotName, callback) {
-      return callback();
+      const wait = { callback, dispose: undefined };
+      const list = waits.get(slotName) ?? [];
+      list.push(wait);
+      waits.set(slotName, list);
+      if (declared.has(slotName)) wait.dispose = callback();
+      return () => {
+        if (typeof wait.dispose === 'function') wait.dispose();
+        wait.dispose = undefined;
+      };
     },
     register(options, component) {
-      registerEntry(options, component);
-      return () => {};
+      if (!declared.has(options.name)) {
+        throw new Error('register() on an undeclared slot: ' + options.name);
+      }
+      return registerEntry(options, component);
     },
   },
   remote: {
@@ -177,18 +222,55 @@ const ctx = {
     list: {
       subscribe() { return () => {}; },
       getSnapshot() {
-        return { current: 'session-blank', byId: { 'session-blank': { cwd: 'C:\\workspaces\\primary' } } };
+        return {
+          current: 'session-blank',
+          byId: {
+            'session-blank': { cwd: 'C:\\workspaces\\primary', blank: true },
+            'session-x': { cwd: 'C:\\workspaces\\primary' },
+          },
+        };
       },
     },
   },
 };
+
+// Standard-kit shares the shell hands a `conversation.input.dock` entry: the
+// session id, the dock owner share (`{ session, input }`), and the root
+// selector hooks. Mirrors the rc.6 ConversationRoot render.
+const sessionsSnapshot = ctx.sessions.list.getSnapshot();
+const workspacesSnapshot = ctx.workspaces.list.getSnapshot();
+const dockProps = (over) =>
+  withT(Object.assign(
+    {
+      sessionId: 'session-blank',
+      session: { composerPhase: 'blank', openState: 'open' },
+      input: {},
+      useSessions: (selector) => selector(sessionsSnapshot),
+      useWorkspaces: (selector) => selector(workspacesSnapshot),
+    },
+    over ?? {},
+  ));
+
+// The shipped rc.6 shell declares the input dock but not the hero-extras hole.
+declareSlot('conversation.input.dock');
 
 moduleExport.apply(ctx);
 
 assert(entryBy('conversation.session.header.actions', 'multi-folder'), 'header action registered');
 assert(entryBy('shell.overlay', 'multi-folder'), 'overlay panel registered');
 assert(entryBy('shell.overlay', 'multi-folder-hero'), 'hero launcher registered');
-assert(entryBy('conversation.hero.workspaceExtras', 'multi-folder'), 'upstream hero slot registration present');
+assert(entryBy('conversation.input.dock', 'multi-folder'), 'input-dock chip registered');
+assert(
+  entryBy('conversation.hero.workspaceExtras', 'multi-folder') === undefined,
+  'undeclared upstream hero slot stays unoccupied',
+);
+
+// Dock entry shape: the list-slot contract the framework arranges by. A unique
+// id and an explicit order are what let other plugins share this band.
+const dockEntry = entryBy('conversation.input.dock', 'multi-folder');
+assert(dockEntry.options.id === 'multi-folder', 'dock entry carries a unique list id');
+assert(typeof dockEntry.options.order === 'number', 'dock entry declares an explicit order');
+assert(dockEntry.options.order > 100, 'dock order sits after the shipped dock neighbours');
 
 // Locale: the bundle registered a bilingual `multi-folder` namespace, and
 // every list-entry label is a thunk resolving through the active locale.
@@ -202,7 +284,7 @@ for (const [slotName, id] of [
   ['conversation.session.header.actions', 'multi-folder'],
   ['shell.overlay', 'multi-folder'],
   ['shell.overlay', 'multi-folder-hero'],
-  ['conversation.hero.workspaceExtras', 'multi-folder'],
+  ['conversation.input.dock', 'multi-folder'],
 ]) {
   assert(typeof entryBy(slotName, id).options.label === 'function', `label is a thunk (${slotName})`);
   assert(entryBy(slotName, id).options.locale === 'multi-folder', `registration declares locale (${slotName})`);
@@ -309,63 +391,140 @@ await tick();
 const errPanel = renderDeep(panel.component(withT({})));
 assert(JSON.stringify(errPanel).includes('boom'), 'error surfaced in panel');
 
-// ---- Session-creation page flows (hero) ----------------------------------
-// Close the session panel, then mount the hero launcher: the fake document
-// reports data-phase="hero" and the mock session list points at the blank
-// session of C:\workspaces\primary.
+// ---- Session-creation page: the input-dock chip (shipped seat) ------------
+// Deep helpers: the anchored popover is a nested function component, so the
+// shallow `walk` above cannot reach it.
+const deepRender = (node) => {
+  if (node === null || node === undefined || typeof node !== 'object') return node;
+  if (Array.isArray(node)) return node.map(deepRender);
+  if (typeof node.type === 'function') return deepRender(node.type(node.props));
+  return {
+    type: node.type,
+    props: node.props,
+    children: Array.isArray(node.children) ? node.children.map(deepRender) : node.children,
+  };
+};
+const textOf = (node) => JSON.stringify(deepRender(node));
+const collectButtons = (node, out = []) => {
+  if (node === null || node === undefined || typeof node !== 'object') return out;
+  if (Array.isArray(node)) {
+    node.forEach((child) => collectButtons(child, out));
+    return out;
+  }
+  if (typeof node.type === 'function') return collectButtons(node.type(node.props), out);
+  if (node.type === 'button') out.push(node);
+  if (Array.isArray(node.children)) node.children.forEach((child) => collectButtons(child, out));
+  if (node.props && node.props.children !== undefined) {
+    (Array.isArray(node.props.children) ? node.props.children : [node.props.children]).forEach((child) => collectButtons(child, out));
+  }
+  return out;
+};
+
+// Close the session panel first; the fake document reports data-phase="hero"
+// and the mock session list points at the blank session of C:\workspaces\primary.
 closeButton.props.onClick();
 
+const dock = entryBy('conversation.input.dock', 'multi-folder');
 const heroEntry = entryBy('shell.overlay', 'multi-folder-hero');
-renderDeep(heroEntry.component(withT({}))); // mounts the effect: syncHero runs
-const heroButton = renderDeep(heroEntry.component(withT({})));
-assert(heroButton !== null && heroButton.type === 'button', 'hero launcher visible in hero phase');
 
-const rpcBefore = rpcCalls.length;
-heroButton.props.onClick();
+// While a declared slot seat holds the page, the fixed bottom-right launcher
+// stands down — one hero entry, never two.
+assert(renderDeep(heroEntry.component(withT({}))) === null, 'fixed launcher stands down while a slot seat is mounted');
+
+// An active (non-blank) session keeps its entry in the session header, so the
+// dock row renders nothing there.
+assert(
+  renderDeep(dock.component(dockProps({
+    sessionId: 'session-x',
+    session: { composerPhase: 'ready', openState: 'open' },
+  }))) === null,
+  'dock chip hides outside the session-creation page',
+);
+
+// Session-creation page: the chip row renders and warms its count through the
+// sessionless channel (workspace mode produces no conversation row).
+const rpcBeforeDock = rpcCalls.length;
+let dockRow = renderDeep(dock.component(dockProps()));
 await tick();
-assert(rpcCalls.length === rpcBefore + 1, 'workspace-mode open lists through the shared RPC channel');
+assert(dockRow !== null && dockRow.type === 'div', 'dock chip renders a row in the hero phase');
+assert(dockRow.props.style.paddingLeft === 20, 'dock row is indented onto the official hero chip row');
+assert(dockRow.props.style.position === undefined, 'dock row stays in flow (no absolute positioning)');
+assert(rpcCalls.length > rpcBeforeDock, 'dock chip warms the workspace list over the RPC channel');
 assert(rpcCalls[rpcCalls.length - 1].channel === '/api', 'RPC channel is /api');
-assert(rpcCalls[rpcCalls.length - 1].endpoint === 'multiFolder/list', 'list endpoint');
-assert(rpcCalls[rpcCalls.length - 1].args.workspace === 'C:\\workspaces\\primary', 'list keyed by workspace path');
+assert(rpcCalls[rpcCalls.length - 1].endpoint === 'multiFolder/list', 'warm read uses the list endpoint');
+assert(rpcCalls[rpcCalls.length - 1].args.workspace === 'C:\\workspaces\\primary', 'warm read keyed by workspace path');
 
-const workspacePanel = renderDeep(panel.component(withT({})));
-assert(workspacePanel !== null, 'panel opens in workspace mode');
-assert(JSON.stringify(workspacePanel).includes('C:\\\\workspaces\\\\primary'), 'workspace shown in panel');
-assert(JSON.stringify(workspacePanel).includes('secondary'), 'dirs listed from the remote value');
+// Warm cache: the chip label carries the configured count.
+dockRow = renderDeep(dock.component(dockProps()));
+assert(textOf(dockRow).includes('多工作目录 · 1'), 'chip shows the configured directory count');
 
-// Workspace-mode mutations: add via pickDirectory -> multiFolder/add.
-buttons.length = 0;
-walk(workspacePanel);
-const wsAddButton = buttons.find((b) => JSON.stringify(b.children || []).includes('添加目录'));
-assert(wsAddButton, 'workspace-mode add button present');
-const rpcBeforeAdd = rpcCalls.length;
-wsAddButton.props.onClick();
+// Clicking it opens the panel as the chip's OWN popover, and the overlay panel
+// stands down so the panel never renders twice.
+const dockChipButton = collectButtons(dockRow)[0];
+assert(dockChipButton, 'dock chip renders a button');
+dockChipButton.props.onClick();
+await tick();
+assert(renderDeep(panel.component(withT({}))) === null, 'overlay panel stands down for an anchored chip');
+dockRow = renderDeep(dock.component(dockProps()));
+const dockText = textOf(dockRow);
+assert(dockText.includes('C:\\\\workspaces\\\\primary'), 'anchored popover shows the workspace');
+assert(dockText.includes('secondary'), 'anchored popover lists the configured dirs');
+
+// Workspace-mode mutations from the anchored popover.
+const dockPanelButtons = collectButtons(dockRow);
+const dockAdd = dockPanelButtons.find((b) => textOf(b.children || []).includes('添加目录'));
+assert(dockAdd, 'anchored popover carries the add button');
+const rpcBeforeDockAdd = rpcCalls.length;
+dockAdd.props.onClick();
 await new Promise((r) => setTimeout(r, 20));
-assert(rpcCalls.length > rpcBeforeAdd, 'workspace-mode add fired through the RPC channel');
+assert(rpcCalls.length > rpcBeforeDockAdd, 'anchored add fired through the RPC channel');
 assert(rpcCalls[rpcCalls.length - 1].endpoint === 'multiFolder/add', 'add endpoint');
 assert(rpcCalls[rpcCalls.length - 1].args.workspace === 'C:\\workspaces\\primary', 'add keyed by workspace path');
 assert(rpcCalls[rpcCalls.length - 1].args.path === 'C:\\workspaces\\secondary', 'add path argument');
 
-// Workspace-mode remove.
-const afterAddPanel = renderDeep(panel.component(withT({})));
+// ---- Hero seat election: a better seat takes over, still one entry --------
+declareSlot('conversation.hero.workspaceExtras');
+const heroChipEntry = entryBy('conversation.hero.workspaceExtras', 'multi-folder');
+assert(heroChipEntry, 'upstream hero chip registers the moment the slot is declared');
+assert(renderDeep(dock.component(dockProps())) === null, 'dock chip stands down for the upstream hero seat');
+assert(renderDeep(heroEntry.component(withT({}))) === null, 'fixed launcher stands down for the upstream hero seat');
+
+const extrasProps = withT({ workspacePath: 'C:\\workspaces\\primary' });
+let extrasRow = renderDeep(heroChipEntry.component(extrasProps));
+assert(extrasRow !== null && extrasRow.type === 'div', 'hero chip renders');
+const extrasButton = collectButtons(extrasRow)[0];
+extrasButton.props.onClick();
+await tick();
+assert(renderDeep(panel.component(withT({}))) === null, 'hero chip owns its popover too');
+extrasRow = renderDeep(heroChipEntry.component(extrasProps));
+assert(textOf(extrasRow).includes('secondary'), 'hero chip popover lists the configured dirs');
+
+// ---- Fallback: no declared seat at all -> the fixed launcher returns ------
+collapseSlot('conversation.hero.workspaceExtras');
+collapseSlot('conversation.input.dock');
+assert(entryBy('conversation.input.dock', 'multi-folder') === undefined, 'collapsing a declaration withdraws the dock entry');
+assert(entryBy('conversation.hero.workspaceExtras', 'multi-folder') === undefined, 'collapsing the upstream declaration withdraws the chip');
+
+renderDeep(heroEntry.component(withT({}))); // mounts the effect: syncHero runs
+const fallback = renderDeep(heroEntry.component(withT({})));
+assert(fallback !== null && fallback.type === 'button', 'fixed launcher returns when no slot seat is available');
+
+fallback.props.onClick();
+await tick();
+const workspacePanel = renderDeep(panel.component(withT({})));
+assert(workspacePanel !== null, 'fallback launcher opens the overlay panel in workspace mode');
+assert(textOf(workspacePanel).includes('C:\\\\workspaces\\\\primary'), 'workspace shown in panel');
+assert(textOf(workspacePanel).includes('secondary'), 'dirs listed from the cached remote value');
+
+// Workspace-mode remove through the overlay panel.
 buttons.length = 0;
-walk(afterAddPanel);
+walk(workspacePanel);
 const wsRemoveButton = buttons.find((b) => JSON.stringify(b.children || []).includes('移除'));
 assert(wsRemoveButton, 'workspace-mode remove button present');
 const rpcBeforeRemove = rpcCalls.length;
 wsRemoveButton.props.onClick();
 await tick();
 assert(rpcCalls.length === rpcBeforeRemove + 1 && rpcCalls[rpcCalls.length - 1].endpoint === 'multiFolder/remove', 'remove endpoint');
-
-// Upstream hero chip (B1): opens the same workspace-mode panel.
-const heroChipEntry = entryBy('conversation.hero.workspaceExtras', 'multi-folder');
-const chip = renderDeep(heroChipEntry.component(withT({ workspacePath: 'C:\\workspaces\\primary' })));
-assert(chip !== null && chip.type === 'button', 'hero chip renders');
-const rpcBeforeChip = rpcCalls.length;
-chip.props.onClick();
-await tick();
-assert(rpcCalls.length === rpcBeforeChip || rpcCalls[rpcCalls.length - 1].endpoint === 'multiFolder/list', 'hero chip reuses cached workspace list (or refreshes)');
-assert(renderDeep(panel.component(withT({}))) !== null, 'hero chip opens the workspace panel');
 
 // RPC failure surfaces in workspace mode.
 ctx.connection.rpc.call = async () => ({ ok: false, error: { message: 'rpc-boom' } });

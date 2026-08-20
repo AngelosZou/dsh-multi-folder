@@ -8,10 +8,14 @@ place configuration UI next to the workspace picker.
 
 This document specifies the small upstream change to
 `@deepseek-ai/dsh-client-ui-conversation` that adds one, and explains how the
-plugin consumes it. Until this lands in a DSH release, the plugin's fixed
-`shell.overlay` hero launcher covers the same page (B2); the slot registration
-below is a waiting no-op (`slots.inject` fires only once the declaration
-exists), so the plugin works with and without the upstream change.
+plugin consumes it. Until this lands in a DSH release, the plugin's
+`conversation.input.dock` chip row covers the same page (an in-flow chip
+directly above the composer card, in the band the git-branch chip uses); the
+slot registration below is a waiting no-op (`slots.inject` fires only once the
+declaration exists), so the plugin works with and without the upstream change.
+When the declaration does arrive, the hero chip claims the better seat and the
+dock row stands down automatically — see the "hero seat election" section of
+[design.md](design.md).
 
 ## 1. Declare the slot
 
@@ -85,19 +89,24 @@ active locale (English: "Multi-folder", Chinese: 「多工作目录」):
 
 ```js
 slots.inject('conversation.hero.workspaceExtras', function () {
-  return slots.register(
+  var release = claimHeroSeat('extras');
+  var dispose = slots.register(
     { name: 'conversation.hero.workspaceExtras', id: 'multi-folder', order: 30, label: () => t('label'), locale: NS },
     function (props) { return React.createElement(HeroChip, props); },
   );
+  return function () { dispose(); release(); };
 });
 ```
 
 (`NS` is the plugin's `multi-folder` namespace and `t` its bound translator —
-see the localization section of [design.md](design.md).)
+see the localization section of [design.md](design.md). `claimHeroSeat('extras')`
+is the seat election: while this declaration lives, the `conversation.input.dock`
+row and the fixed fallback launcher render nothing.)
 
 `HeroChip` prefers the owner-supplied `props.workspacePath` and falls back to
-the store-derived hero workspace. It opens the same overlay panel in workspace
-mode, which reads and writes the configuration through the sessionless
+the store-derived hero workspace. It opens the shared panel body as its own
+popover anchored under the chip (matching the official workspace picker on the
+same row), reading and writing the configuration through the sessionless
 `multiFolder/*` endpoints (see [design.md](design.md)).
 
 ## Compiled-bundle equivalent (for local patching)
@@ -118,10 +127,14 @@ bundle; the same change there is three touchpoints:
 
 ## Verification
 
-- Unit: the plugin's `test/smoke-client.mjs` registers and drives `HeroChip`
-  with a mock owner share (`workspacePath`), asserting the panel opens in
-  workspace mode and reuses the per-workspace cache.
+- Unit: the plugin's `test/smoke-client.mjs` declares the slot mid-run through
+  a declaration-aware `slots.inject` mock, then drives `HeroChip` with a mock
+  owner share (`workspacePath`), asserting the chip registers on declaration,
+  opens its popover in workspace mode from the per-workspace cache, and that
+  the `conversation.input.dock` row plus the fixed launcher both stand down
+  while the slot lives (and that the dock row returns once it collapses).
 - Manual: with the patched build, the Multi-folder chip (「多工作目录」 in the
   Chinese UI) renders in the hero workspace row between the preset chip and
   the composer; clicking it lists the workspace's secondary directories
-  before any message is sent.
+  before any message is sent, and the chip row above the composer card
+  disappears (one entry, not two).

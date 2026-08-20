@@ -15,7 +15,7 @@ agent informed. No new tools are added.
 | Half | File | Role |
 | ---- | ---- | ---- |
 | Host | `lib/index.js` | Config store, tool-pipeline interception, prompt section, notifications, `/multi-folder` command, sessionless `multiFolder/*` remote API |
-| Client | `lib/client.js` | Session-header button + overlay panel; session-creation page entry (hero launcher + upstream hero chip), both driving the host through the Remote BFF / shared RPC channel |
+| Client | `lib/client.js` | Session-header button + overlay panel; session-creation page entry (input-dock chip, upstream hero chip, or fixed fallback launcher — one at a time), all driving the host through the Remote BFF / shared RPC channel |
 
 The package declares both faces: `dsh.bundle.patch` (the host row inserted by
 `cordis.patch.yml`) and `dsh.client` (the web bundle at `exports["./client"]`).
@@ -157,9 +157,12 @@ window.__ModuleLoader__.load({
   `@deepseek-ai/dsh-client-connection`, `@deepseek-ai/dsh-client-locale`,
   `@deepseek-ai/dsh-client-runtime`).
 - UI registrations: `conversation.session.header.actions` (session-scoped button),
-  `shell.overlay` panel, `shell.overlay` hero launcher (root-scoped, fixed
-  position), and `conversation.hero.workspaceExtras` (upstream slot; see
-  below). One module-level store is shared by all of them.
+  `shell.overlay` panel, `conversation.input.dock` chip row (session-scoped
+  list entry above the composer card — the session-creation page's shipped
+  seat), `shell.overlay` hero launcher (root-scoped fixed-position fallback),
+  and `conversation.hero.workspaceExtras` (upstream slot; see below). One
+  module-level store is shared by all of them, and only ONE session-creation
+  entry ever renders (see "hero seat election").
 - **Localization (zh / en).** All client copy goes through
   `@deepseek-ai/dsh-client-locale` (always composed by the standard web
   profile). The bundle registers a `multi-folder` dictionary namespace with
@@ -189,20 +192,48 @@ window.__ModuleLoader__.load({
 - Caching: per-session cache (`sessionCache`) keeps pure reads off the
   conversation; per-workspace cache (`workspaceCache`) plays the same role for
   the sessionless channel.
-- Hero (session-creation page) support:
-  - The **hero launcher** (`shell.overlay` entry, `multi-folder-hero`)
-    subscribes to `sessions.list` + `workspaces.list` and observes the
-    conversation root's `data-phase="hero"` attribute (MutationObserver on
-    `document.body`). While the hero is visible it renders a fixed-position
-    「多工作目录」 button; the workspace path is derived from the current
-    (blank) session's `WorkspaceView.path`, falling back to `SessionSummary.cwd`.
-  - Clicking it opens the panel in workspace mode; without a selected
-    workspace the panel shows the "pick a workspace first" hint.
+- Hero (session-creation page) support — **three candidate seats, one visible
+  entry**:
+  - The **dock chip** (`conversation.input.dock`, id `multi-folder`,
+    order 120) is the shipped seat: a `list` slot the rc.6 shell declares and
+    renders directly ABOVE the composer card, in the same band as the
+    git-branch chip. The entry receives the dock owner share (`{ session,
+    input }`) plus the standard `useSessions` / `useWorkspaces` selector hooks,
+    so the hero phase (`composerPhase === 'blank' && (openState === 'open' ||
+    blank)`) and the target workspace come from framework props instead of DOM
+    probing. The row stays **in flow** — `display:flex` with the official hero
+    row's 20px indent, no absolute positioning — so the framework's list-slot
+    arrangement keeps it clear of every other plugin's dock row. It renders
+    only on the session-creation page; an active session keeps its entry in the
+    session header, so the two never appear together.
   - The **hero chip** registers into `conversation.hero.workspaceExtras` via
     `slots.inject`, which waits for the declaration: with an upstream DSH
     build that declares the slot, the chip renders inline beside the workspace
-    picker; without one, the registration is a harmless no-op and the fixed
-    launcher covers the page.
+    picker; without one, the registration contributes nothing.
+  - The **hero launcher** (`shell.overlay` entry, `multi-folder-hero`) is the
+    last-resort fallback for shells that declare neither slot. Only then does
+    it subscribe to `sessions.list` + `workspaces.list` and observe the
+    conversation root's `data-phase="hero"` attribute (MutationObserver on
+    `document.body`) to render a fixed-position button; the
+    workspace path is derived from the current (blank) session's
+    `WorkspaceView.path`, falling back to `SessionSummary.cwd`.
+  - **Hero seat election.** Each seat claims a token while its slot declaration
+    is live (`slots.inject` fires only for declared slots and disposes on
+    collapse); the components render only while holding the best live claim
+    (`extras` > `dock` > fallback). The framework arranges *different plugins*
+    on a shared `list` slot but has no opinion about one plugin holding several
+    alternative seats, so this election is the plugin's own duty.
+  - Clicking any of them opens the panel in workspace mode; without a selected
+    workspace the panel shows the "pick a workspace first" hint.
+- Panel placement: one `panelBody(store, t)` function returns the panel's
+  children, spread by whichever wrapper owns the panel — the fixed
+  `shell.overlay` panel (session-header path) or an `AnchoredPanel` popover
+  rendered by the chip itself (opening upward from the dock row, downward from
+  the hero row). `store.anchor` names the owner, and the overlay wrapper stands
+  down whenever a chip owns it, so the panel never renders twice.
+- Styling: all surfaces use the official `--dsw-alias-*` design tokens
+  (`dsh-client-ui-theme`) with inert fallbacks, so themes and applied skins
+  restyle this plugin's chip and panel along with the shell's own controls.
 
 ## Known limitations
 
@@ -244,12 +275,26 @@ window.__ModuleLoader__.load({
   visible in the conversation UI by framework design; they are log-only and never
   reach the model. Workspace-mode (session-creation page) operations avoid them
   entirely by using the sessionless remote channel.
-- The hero launcher relies on the conversation root's `data-phase="hero"`
-  attribute and the `sessions.list`/`workspaces.list` snapshot shapes — DOM and
-  client-runtime internals rather than documented APIs. They are guarded
-  defensively (missing services or DOM degrade to "launcher hidden"), and the
-  upstream `conversation.hero.workspaceExtras` slot (see
-  [upstream-hero-slot.md](upstream-hero-slot.md)) is the long-term surface.
+- The session-creation entry depends on shell internals to different degrees per
+  seat. The **dock chip** reads only declared contract surfaces (the
+  `conversation.input.dock` declaration, its owner share, and the standard
+  selector hooks), but its 20px indent is tuned to the shipped hero row's
+  padding — a restyled shell would misalign it, never break it. The **fallback
+  launcher** relies on the conversation root's `data-phase="hero"` attribute and
+  the `sessions.list`/`workspaces.list` snapshot shapes — DOM and client-runtime
+  internals rather than documented APIs; they are guarded defensively (missing
+  services or DOM degrade to "launcher hidden") and it only mounts when no
+  declared seat exists. The upstream `conversation.hero.workspaceExtras` slot
+  (see [upstream-hero-slot.md](upstream-hero-slot.md)) remains the long-term
+  surface.
+- Sharing the `conversation.input.dock` band is safe by construction (unique
+  `id`, explicit `order`, in-flow layout) but `order` is a shared number space,
+  not an enforced allocation: another plugin may pick the same `order` and the
+  tie is then broken by registration sequence. The rows still stack without
+  overlapping — only their vertical sequence is unspecified. Absolute-positioned
+  neighbours (the git-branch chip lifts itself into the hero row) are outside
+  the framework's arrangement entirely; this plugin deliberately does not do the
+  same.
 - The `multiFolder/*` endpoints use hand-written `src-json` Typert descriptors
   registered through `ctx.typert.register`. `src-json` gives JSON-safety
   boundary checks, not schema validation; the shared core performs all
@@ -265,5 +310,11 @@ canonicalization, the config guard, both notification channels, notice
 gating, command flows, the panel's session-switch/caching behavior, the
 sessionless remote contribution shape and behavior (list/add/set/remove,
 idempotence, sanitization, error prefixing, cross-channel cache coherence),
-and the hero/workspace-mode client flows (launcher visibility, RPC routing,
-workspace-mode mutations and error surfacing).
+and the hero/workspace-mode client flows. The client test's `slots.inject` mock
+is declaration-aware like the real service (a wait fires only while its slot is
+declared, and a collapse disposes the registration), so it covers all three
+session-creation seats: the dock chip on an rc.6-style shell (registration
+shape, in-flow row, hero-only visibility, RPC routing, anchored popover), the
+upstream hero chip taking over the moment its slot is declared, and the fixed
+launcher returning once both declarations collapse — asserting at each step that
+the other two surfaces stand down.

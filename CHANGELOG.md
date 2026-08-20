@@ -4,6 +4,50 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.1.5] — 2026-08-17
+
+### Changed
+
+- **Session-creation page entry moved above the composer.** The new-session
+  entry was a fixed launcher pinned to the bottom-right corner of the page,
+  detached from the controls it belongs with. It now renders as a chip row in
+  the shipped `conversation.input.dock` band — directly above the composer
+  card, indented onto the same left edge as the official workspace/preset chips
+  and the git-branch chip — and opens the panel as a popover anchored to the
+  chip instead of a panel floating in the opposite corner. The chip also shows
+  the configured directory count once its (conversation-row-free) workspace
+  read lands.
+- The dock row is deliberately **in flow** (`display:flex` + the hero row's
+  indent, no absolute positioning, no measurement): the framework arranges
+  co-registered `list`-slot entries as sibling rows (sorted by
+  `priority`/`order`, one cell per `id`, a loud duplicate-`(id, priority)`
+  guard, `display:contents` outlets), so an absolutely positioned row would
+  leave that arrangement and silently overlap a neighbour's chip.
+- Session-creation seats are now **elected, not stacked**: the three candidate
+  surfaces (upstream `conversation.hero.workspaceExtras` chip >
+  `conversation.input.dock` row > fixed fallback launcher) each claim a token
+  while their slot declaration is live, and only the best live claim renders —
+  so the page can never show two Multi-folder entries, whichever shell is
+  running. The fallback launcher no longer even wires its `MutationObserver`
+  while a declared seat holds the page, and the dock chip reads the hero phase
+  and target workspace from framework props (the dock owner share plus the
+  standard `useSessions`/`useWorkspaces` hooks) instead of probing the DOM.
+- The dock chip renders only on the session-creation page; an active session
+  keeps its entry in the session header, so the two never appear at once.
+- All client surfaces are restyled from the official `--dsw-alias-*` design
+  tokens (`dsh-client-ui-theme`) with inert fallbacks, replacing the previous
+  `--color-*` names, which matched no shipped token and therefore always fell
+  through to hard-coded greys. Themes and applied skins now restyle this
+  plugin's chip and panel along with the shell's own controls.
+- The panel body is one shared function spread by whichever wrapper owns it
+  (fixed overlay for the session-header path, anchored popover for a chip), so
+  both placements render one identical panel and the overlay stands down
+  whenever a chip owns the open panel.
+- `test/smoke-client.mjs`: the `slots.inject` mock is now declaration-aware
+  like the real service (waits fire only while their slot is declared, and a
+  collapse disposes the registration), covering all three seats and asserting
+  that the other two stand down at each step.
+
 ## [0.1.4] — 2026-08-17
 
 ### Added

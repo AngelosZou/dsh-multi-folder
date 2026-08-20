@@ -36,7 +36,7 @@ dsh plugin --profile web add dsh-multi-folder
 
 ## 使用
 
-会话头部出现「多工作目录」按钮（英文界面显示 "Multi-folder"）；**会话创建页**也有入口（新会话界面右下角的浮动按钮；当上游 DSH 声明 `conversation.hero.workspaceExtras` 插槽后，还会在工作区选择器旁显示内联 chip）。打开面板即可：
+会话头部出现「多工作目录」按钮（英文界面显示 "Multi-folder"）；**会话创建页**的入口位于**输入框上方**——与 git 分支胶囊同一条 dock 带，左边缘对齐新会话界面的工作区/预设胶囊，点击后面板以锚定在该胶囊上的浮层展开。会话创建页始终只显示**一个**入口：插件注册三个候选座位并选用当前可用的最佳者（上游 `conversation.hero.workspaceExtras` chip > `conversation.input.dock` 行 > 两者皆未声明时的右下角浮动按钮）。打开面板即可：
 
 | 操作 | 行为 |
 | ---- | ---- |
@@ -82,7 +82,7 @@ Agent 无需任何额外操作：`read` / `glob` / `grep` 随处可用；`write`
 | ---- | ---- |
 | `cordis.patch.yml` | profile patch 层，插入 `dsh-multi-folder` 行 |
 | `lib/index.js` | 宿主插件：配置存储、工具流水线拦截、提示词注入、双通道通知、`/multi-folder` 命令、无会话 `multiFolder/*` 远程 API |
-| `lib/client.js` | 客户端插件（factory bundle）：会话头部按钮 + 覆盖层面板 + 会话创建页入口（hero 浮动按钮 / 上游 hero chip） |
+| `lib/client.js` | 客户端插件（factory bundle）：会话头部按钮 + 覆盖层面板 + 会话创建页入口（输入框上方的 dock 胶囊 / 上游 hero chip / 右下角兜底浮动按钮） |
 | `test/` | 免 DSH 运行时的行为测试（见开发） |
 | `docs/` | 设计与分析文档 |
 

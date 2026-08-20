@@ -36,7 +36,7 @@ Then **restart the DSH backend** (host composition loads at process start) and *
 
 ## Usage
 
-A Multi-folder button appears in the session header, and a second entry appears on the **session-creation page** (fixed launcher in the bottom-right corner while the new-session screen is shown; an inline chip beside the workspace picker once the upstream `conversation.hero.workspaceExtras` slot is available). The panel lets you:
+A Multi-folder button appears in the session header, and a second entry appears on the **session-creation page**: a chip row directly above the composer card (the same band the git-branch chip uses), aligned with the workspace/preset chips of the new-session screen. Clicking it opens the panel as a popover anchored to the chip. Exactly one session-creation entry is ever shown — the plugin registers three candidate seats and elects the best available one (upstream `conversation.hero.workspaceExtras` chip > `conversation.input.dock` row > fixed bottom-right launcher for shells declaring neither). The panel lets you:
 
 | Action | Behavior |
 | ------ | -------- |
@@ -82,7 +82,7 @@ When a shell run ends in such a denial and references a configured secondary dir
 | ---- | ------- |
 | `cordis.patch.yml` | Profile patch layer inserting the `dsh-multi-folder` row |
 | `lib/index.js` | Host plugin: config store, tool-pipeline interception, prompt injection, dual-channel notifications, `/multi-folder` command, sessionless `multiFolder/*` remote API |
-| `lib/client.js` | Client plugin (factory bundle): session-header button + overlay panel + session-creation page entry (hero launcher / upstream hero chip) |
+| `lib/client.js` | Client plugin (factory bundle): session-header button + overlay panel + session-creation page entry (input-dock chip / upstream hero chip / fixed fallback launcher) |
 | `test/` | Runtime-free behavior tests (see Development) |
 | `docs/` | Design and analysis documents |
 
