@@ -177,7 +177,9 @@ window.__ModuleLoader__.load({
   Language preference in Settings; the English UI reads "Multi-folder", the
   Chinese UI keeps 「多工作目录」.
 - Host communication, two channels:
-  - session mode: `ctx.remote.commands.execute(sessionId, line)`. The return
+  - session mode: `ctx.remote.commands.execute(sessionId, line, [])`. Since
+    DSH 0.1.1 the remote takes the composer-images argument as its third
+    business argument (empty array for a plain invocation). The return
     value is the RPC envelope `{ ok, value }` where `value` is the
     `CommandExecution`; command result text carries a `[MF:JSON] {…}` line the
     panel parses for structured state.

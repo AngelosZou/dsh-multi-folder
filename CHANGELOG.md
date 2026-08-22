@@ -2,7 +2,18 @@
 
 All notable changes to this project are documented in this file.
 
-## [Unreleased]
+## [0.1.6] — 2026-08-22
+
+### Fixed
+
+- **DSH 0.1.1 compatibility: `commands/execute` image argument.** The Remote
+  BFF's `commands/execute` now takes three business arguments —
+  `(sessionId, line, images)` — plus an optional `AbortSignal`; the client
+  gateway validates the count and rejected the previous two-argument call
+  with `client api: commands/execute expected 3 business argument(s) plus an
+  optional AbortSignal, got 2`. The client now passes `[]` (the plugin never
+  attaches composer images). `test/smoke-client.mjs` asserts the new call
+  shape.
 
 ## [0.1.5] — 2026-08-17
 

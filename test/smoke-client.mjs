@@ -165,8 +165,8 @@ const ctx = {
   },
   remote: {
     commands: {
-      async execute(sessionId, line) {
-        calls.push({ sessionId, line });
+      async execute(sessionId, line, images) {
+        calls.push({ sessionId, line, images });
         if (line.includes('list')) {
           return {
             ok: true,
@@ -307,6 +307,10 @@ await tick();
 assert(calls.length === 1, 'refresh command fired on open');
 assert(calls[0].sessionId === 'session-x', 'session id passed to remote');
 assert(calls[0].line === '/multi-folder list', 'list line');
+assert(
+  Array.isArray(calls[0].images) && calls[0].images.length === 0,
+  'execute passes the empty images argument required by DSH 0.1.1',
+);
 
 // Panel render after refresh ----------------------------------------------
 const panel = entryBy('shell.overlay', 'multi-folder');
