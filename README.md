@@ -34,6 +34,15 @@ dsh plugin --profile web add dsh-multi-folder
 
 Then **restart the DSH backend** (host composition loads at process start) and **refresh the browser page** (the client bundle is served `no-cache`).
 
+## Compatibility
+
+Choose the plugin version that matches your DeepSeek Harness release:
+
+| DeepSeek Harness | Install |
+| --- | --- |
+| 0.1.1 or earlier | `dsh-multi-folder@0.1.7` |
+| 0.1.2-alpha or later | the latest `dsh-multi-folder` |
+
 ## Usage
 
 A Multi-folder button appears in the session header, and a second entry appears on the **session-creation page**: a chip row directly above the composer card (the same band the git-branch chip uses), aligned with the workspace/preset chips of the new-session screen. Clicking it opens the panel as a popover anchored to the chip. Exactly one session-creation entry is ever shown — the plugin registers three candidate seats and elects the best available one (upstream `conversation.hero.workspaceExtras` chip > `conversation.input.dock` row > fixed bottom-right launcher for shells declaring neither). The panel lets you:

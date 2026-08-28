@@ -154,8 +154,7 @@ window.__ModuleLoader__.load({
 - `inject: ['remote', 'remote.commands', 'slots', 'workspaces', 'connection', 'sessions', 'locale']`; the package's
   `dsh.client.inject` lists the packages providing them
   (`@deepseek-ai/dsh-api-gateway`, `@deepseek-ai/dsh-api-remotes`,
-  `@deepseek-ai/dsh-client-connection`, `@deepseek-ai/dsh-client-locale`,
-  `@deepseek-ai/dsh-client-runtime`).
+  `@deepseek-ai/dsh-client-connection`, `@deepseek-ai/dsh-client-locale`).
 - UI registrations: `conversation.session.header.actions` (session-scoped button),
   `shell.overlay` panel, `conversation.input.dock` chip row (session-scoped
   list entry above the composer card — the session-creation page's shipped

@@ -34,6 +34,15 @@ dsh plugin --profile web add dsh-multi-folder
 
 然后**重启 DSH 后端**（宿主组合在进程启动时装载）并**刷新浏览器页面**（客户端 bundle 以 `no-cache` 提供）。
 
+## 兼容性
+
+请选择与你的 DeepSeek Harness 版本匹配的插件版本：
+
+| DeepSeek Harness | 安装 |
+| --- | --- |
+| 0.1.1 及更早 | `dsh-multi-folder@0.1.7` |
+| 0.1.2-alpha 及更新 | 最新版 `dsh-multi-folder` |
+
 ## 使用
 
 会话头部出现「多工作目录」按钮（英文界面显示 "Multi-folder"）；**会话创建页**的入口位于**输入框上方**——与 git 分支胶囊同一条 dock 带，左边缘对齐新会话界面的工作区/预设胶囊，点击后面板以锚定在该胶囊上的浮层展开。会话创建页始终只显示**一个**入口：插件注册三个候选座位并选用当前可用的最佳者（上游 `conversation.hero.workspaceExtras` chip > `conversation.input.dock` 行 > 两者皆未声明时的右下角浮动按钮）。打开面板即可：

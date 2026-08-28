@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.2.0] — 2026-08-28
+
+### Changed
+
+- Adaptive to DSH 0.1.2 alpha, no longer support DSH 0.1.1 or previous version
+
 ## [0.1.6] — 2026-08-22
 
 ### Fixed
