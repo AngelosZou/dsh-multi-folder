@@ -1,6 +1,6 @@
 {
   "name": "dsh-multi-folder",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "description": "DeepSeek Harness plugin: secondary working directories for a project. The agent keeps the primary workspace as cwd, gains equal write/exec permissions on configured secondary directories under workspace-write mode, and is notified of configuration changes at the next message boundary. Configurable from the session header AND from the session-creation page (before the first message) through a sessionless multiFolder remote API.",
   "keywords": [
     "dsh-plugin",
@@ -39,6 +39,12 @@
     "docs"
   ],
   "dsh": {
+    "compatibility": {
+      "node": ">=20",
+      "dshReleases": {
+        "0.1.1-rc.2": "compatible"
+      }
+    },
     "bundle": {
       "patch": "./cordis.patch.yml"
     },
