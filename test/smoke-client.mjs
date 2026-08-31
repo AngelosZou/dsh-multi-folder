@@ -71,6 +71,7 @@ assert(typeof moduleExport.apply === 'function', 'client apply exported');
 // Mock ctx ---------------------------------------------------------------
 const calls = []; // remote.commands.execute calls
 const rpcCalls = []; // connection.rpc.call calls
+const pickerCalls = []; // which service served pickDirectory
 const registrations = new Map(); // slotName -> [{ options, component }]
 
 const registerEntry = (options, component) => {
@@ -205,6 +206,7 @@ const ctx = {
   },
   workspaces: {
     async pickDirectory() {
+      pickerCalls.push('workspaces');
       return 'C:\\workspaces\\secondary';
     },
     list: {
@@ -216,6 +218,13 @@ const ctx = {
           ],
         };
       },
+    },
+  },
+  // DSH 0.1.2 moved pickDirectory onto uiWorkspace; the bundle must prefer it.
+  uiWorkspace: {
+    async pickDirectory() {
+      pickerCalls.push('uiWorkspace');
+      return 'C:\\workspaces\\secondary';
     },
   },
   sessions: {
@@ -354,6 +363,7 @@ addButton.props.onClick(); // async — need a tick
 await new Promise((r) => setTimeout(r, 20));
 assert(calls.length > before, 'add command fired after pickDirectory');
 assert(calls[calls.length - 1].line.includes('add'), 'add line shape');
+assert(pickerCalls[pickerCalls.length - 1] === 'uiWorkspace', 'DSH 0.1.2 uiWorkspace picker used for add');
 
 // ---- Locale support: copy and labels follow the active locale ------------
 locale.setLocale('en');
@@ -443,6 +453,23 @@ assert(
     session: { composerPhase: 'ready', openState: 'open' },
   }))) === null,
   'dock chip hides outside the session-creation page',
+);
+
+// DSH 0.1.2 hero: a settled blank session carries no `composerPhase`, so the
+// blank/lifecycle fallback must elect the hero phase.
+assert(
+  renderDeep(dock.component(dockProps({
+    sessionId: 'session-blank',
+    session: { blank: true, openState: 'open', running: false, promptAttempted: false },
+  }))) !== null,
+  'dock chip renders on the DSH 0.1.2 hero page (no composerPhase)',
+);
+assert(
+  renderDeep(dock.component(dockProps({
+    sessionId: 'session-x',
+    session: { blank: false, openState: 'open', running: false, promptAttempted: false },
+  }))) === null,
+  'dock chip hides on a DSH 0.1.2 active (non-blank) session',
 );
 
 // Session-creation page: the chip row renders and warms its count through the

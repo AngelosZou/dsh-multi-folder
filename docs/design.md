@@ -200,9 +200,13 @@ window.__ModuleLoader__.load({
     renders directly ABOVE the composer card, in the same band as the
     git-branch chip. The entry receives the dock owner share (`{ session,
     input }`) plus the standard `useSessions` / `useWorkspaces` selector hooks,
-    so the hero phase (`composerPhase === 'blank' && (openState === 'open' ||
-    blank)`) and the target workspace come from framework props instead of DOM
-    probing. The row stays **in flow** — `display:flex` with the official hero
+    so the hero phase and the target workspace come from framework props instead
+    of DOM probing. Detection is DSH-version-adaptive: a shell whose
+    `SessionSnapshot` carries `composerPhase` uses
+    `composerPhase === 'blank' && (openState === 'open' || blank)`, while DSH
+    0.1.2 (no `composerPhase`) uses the settled-blank fallback
+    `blank && !running && !promptAttempted && (openState === 'open' || blank)`.
+    The row stays **in flow** — `display:flex` with the official hero
     row's 20px indent, no absolute positioning — so the framework's list-slot
     arrangement keeps it clear of every other plugin's dock row. It renders
     only on the session-creation page; an active session keeps its entry in the

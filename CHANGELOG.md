@@ -2,6 +2,13 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.2.1] — 2026-08-28
+
+### Fixed
+
+- Fix in DSH 0.1.2 session-creation page folder selection missing.
+- Fix in DSH 0.1.2 "Add directory" in an existing session did nothing.
+
 ## [0.2.0] — 2026-08-28
 
 ### Changed
