@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.2.2] — 2026-09-02
+
+### Fixed
+
+- Interception now awaits hydration and consults both spelling keys before falling through.
+
 ## [0.2.1] — 2026-08-28
 
 ### Fixed

@@ -77,7 +77,17 @@ at apply time can yield `undefined` when the provider row activates later. There
   handler and the `multiFolder/*` remote endpoints) with an explicit
   `workspace-write` policy rooted at the config directory.
 - A per-process cache keyed by normalized workspace path hydrates lazily (on
-  `agent/created`, `agent/pre-step`, and `tools/execute`).
+  `agent/created`, `agent/pre-step`, and `tools/execute`). On the interception
+  path hydration is **awaited**, not fire-and-forget: a first call that landed
+  before the config read resolved would otherwise see an empty cache, fall
+  through to the default pipeline, and be fenced against the PRIMARY workspace
+  root — a spurious `[sandbox: file access denied under workspace-write mode]`
+  for a secondary-directory mutation. `loadDirs` caches, so only the first call
+  pays the read. Because `sandbox-policy` realpath-canonicalizes the policy
+  workspace root while hydration is keyed by the session cwd **as spelled in
+  the header**, a workspace reached through a symlinked/junctioned ancestor can
+  spell the two differently; the interception consults BOTH keys (and the
+  config guard checks both config-path spellings) before falling through.
 - One shared **core** (`coreList` / `coreAdd` / `coreRemove` / `coreSet`)
   implements validation, canonicalization, sanitization, cache write-through,
   and persistence. The command channel and the remote channel both call it, so
@@ -259,10 +269,12 @@ window.__ModuleLoader__.load({
   Lifting this to real multi-root confinement needs an upstream change
   (`SandboxExecutionPolicy` carrying extra write roots and the ACL runner
   accepting several workspace write SIDs).
-- Intercepted secondary-directory writes bypass the fs observation policy: they emit
-  no `fs/observed` event and do not participate in the `fs/write-intent` intent guard.
-  This is deliberate — secondary directories sit outside the primary workspace's
-  observation domain.
+- Intercepted secondary-directory mutations do not participate in the
+  `fs/write-intent` / `fs/edit-intent` intent guards (the interception calls
+  the backend unconditionally, as a full replacement of the tool body), but
+  they DO emit `fs/observed` with a presence observation after success, exactly
+  like the shipped tools — so the observation layer stays coherent with the
+  file content a re-rooted write/edit produced.
 - `presentationMeta` is not computed on the short-circuit path; tool cards fall back to
   their default presentation.
 - `sandbox_permissions` escalation on `pwsh`/`bash` calls in secondary directories is

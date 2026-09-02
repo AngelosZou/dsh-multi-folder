@@ -15,6 +15,8 @@ const CFG_NAME = WS.replace(/[^a-z0-9]+/gi, '-').toLowerCase() + '.json';
 const CFG_PATH = join(CFG_DIR, CFG_NAME);
 
 const listeners = new Map();
+const sections = [];
+const emitted = [];
 const savedConfigs = [];
 const writes = [];
 const edits = [];
@@ -25,7 +27,6 @@ let startedHooks = null;
 let jobsAvailable = true;
 let fakeProc = null;
 let commandDef = null;
-const sections = [];
 
 const session = { id: 's1', header: { cwd: WS } };
 const agent = { session };
@@ -47,6 +48,9 @@ const normalize = (p) => {
   return joined.replace(/^\/+/, '');
 };
 
+const configStore = new Map();
+const configKey = (target) => String(target.processPath ?? target.displayPath).replace(/\\/g, '/').toLowerCase();
+
 const fsMock = {
   async resolve(path, opts) {
     const key = normalize(path);
@@ -58,10 +62,16 @@ const fsMock = {
     return target.processPath;
   },
   async readText(target) {
+    const key = configKey(target);
+    const entry = configStore.get(key);
+    if (entry !== undefined) return JSON.stringify(entry);
     throw new Error('no such file');
   },
   async writeText(target, content, expected, signal, policy) {
     writes.push({ path: String(target.processPath ?? target.displayPath), content, policy });
+    if (String(target.processPath ?? target.displayPath).replace(/\\/g, '/').includes('storages/multi-folder/')) {
+      configStore.set(configKey(target), JSON.parse(content));
+    }
     return { operation: 'create', version: 'v1', before: null, after: content };
   },
   async editText(target, edit, expected, signal, policy) {
@@ -70,7 +80,7 @@ const fsMock = {
   },
 };
 
-const ctx = {
+const makeCtx = (listenersMap, overrides = {}) => ({
   fs: fsMock,
   sandboxPolicy: {
     resolve(request) {
@@ -83,6 +93,9 @@ const ctx = {
       sections.push(section);
       return () => {};
     },
+  },
+  emit(event, ...args) {
+    emitted.push({ event, args });
   },
   get(name) {
     if (name === 'shell') {
@@ -151,12 +164,15 @@ const ctx = {
     return () => {};
   },
   on(event, fn) {
-    const list = listeners.get(event) ?? [];
+    const list = listenersMap.get(event) ?? [];
     list.push(fn);
-    listeners.set(event, list);
+    listenersMap.set(event, list);
     return () => {};
   },
-};
+  ...overrides,
+});
+
+const ctx = makeCtx(listeners);
 
 apply(ctx);
 
@@ -485,5 +501,77 @@ const guardEdit = await execWrite(
   nextPassthrough,
 );
 assert(guardEdit !== 'PASSTHROUGH' && guardEdit.isError === true, 'host-owned config edit rejected');
+
+// 14. Cold-cache regression: with a FRESH context (no prior command, no cached
+//     config), the FIRST edit -- or write -- that lands in a secondary
+//     directory is still intercepted and re-rooted. The interception awaits
+//     hydration; a fire-and-forget read would make this first call see an
+//     empty cache, fall through to the default pipeline, and be fenced
+//     against the PRIMARY workspace root -- surfacing as the spurious
+//     `[sandbox: file access denied under workspace-write mode]` this test
+//     guards against.
+const listenersC = new Map();
+const ctxC = makeCtx(listenersC);
+apply(ctxC);
+const execCold = listenersC.get('tools/execute')[0];
+// By this point the shared config for WS holds only SEC2 (SEC was removed by
+// the command tests above); a fresh context must hydrate it and intercept the
+// very first secondary-dir mutation.
+const coldEdit = await execCold(
+  { name: 'edit', arguments: { file_path: SEC2 + '\\cold.txt', old_string: 'x', new_string: 'y' }, agent, signal: undefined },
+  nextPassthrough,
+);
+assert(coldEdit !== 'PASSTHROUGH' && coldEdit.isError === false, 'cold-first edit intercepted');
+assert(edits[edits.length - 1].policy.workspaceRoot === SEC2, 'cold-first edit policy re-rooted to secondary');
+const coldWrite = await execCold(
+  { name: 'write', arguments: { file_path: SEC2 + '\\cold-w.txt', content: 'c' }, agent, signal: undefined },
+  nextPassthrough,
+);
+assert(coldWrite !== 'PASSTHROUGH' && coldWrite.isError === false, 'cold-first write intercepted');
+assert(writes[writes.length - 1].policy.workspaceRoot === SEC2, 'cold-first write policy re-rooted to secondary');
+
+// 15. Key-desync regression: the session header cwd may be an as-spelled
+//     variant (e.g. `C:\ws\primary`) while the resolved policy workspaceRoot
+//     is its canonical spelling (`C:\real\primary` -- how a symlinked or
+//     junctioned workspace appears to sandbox-policy). Hydration is keyed by
+//     the header spelling; the interception must consult BOTH keys before
+//     falling through, or every secondary-dir mutation would be fenced
+//     against the canonical primary root and denied.
+const WS_B = 'C:\\ws\\primary';
+const REAL_B = 'C:\\real\\primary';
+const agentB = { session: { id: 'sB', header: { cwd: WS_B } } };
+const listenersB = new Map();
+const ctxB = makeCtx(listenersB, {
+  sandboxPolicy: {
+    resolve(request) {
+      const sid = request && request.session ? String(request.session.id) : undefined;
+      return { mode: 'workspace-write', workspaceRoot: REAL_B, ...(sid ? { sessionId: sid } : {}) };
+    },
+  },
+});
+apply(ctxB);
+const commandHandlerB = commandDef && commandDef.handler;
+assert(commandHandlerB, 'desync command registered');
+const setB = await commandHandlerB({ commandId: 'cb1', agent: agentB, rawInput: 'set "' + SEC + '"', signal: undefined });
+assert(setB.kind === 'success', 'desync config set succeeds: ' + JSON.stringify(setB));
+const execB = listenersB.get('tools/execute')[0];
+const editB = await execB(
+  { name: 'edit', arguments: { file_path: SEC + '\\d.txt', old_string: 'a', new_string: 'b' }, agent: agentB, signal: undefined },
+  nextPassthrough,
+);
+assert(editB !== 'PASSTHROUGH' && editB.isError === false, 'desync-cwd edit intercepted');
+assert(edits[edits.length - 1].policy.workspaceRoot === SEC, 'desync-cwd edit policy re-rooted to secondary');
+const writeB = await execB(
+  { name: 'write', arguments: { file_path: SEC + '\\d-w.txt', content: 'x' }, agent: agentB, signal: undefined },
+  nextPassthrough,
+);
+assert(writeB !== 'PASSTHROUGH' && writeB.isError === false, 'desync-cwd write intercepted');
+assert(writes[writes.length - 1].policy.workspaceRoot === SEC, 'desync-cwd write policy re-rooted to secondary');
+
+// 16. Intercepted mutations emit `fs/observed` (the shipped tools' contract),
+//     keeping the fs observation layer coherent after a re-rooted write/edit.
+const observed = emitted.filter((e) => e.event === 'fs/observed');
+assert(observed.length >= 2, 'fs/observed emitted for intercepted write/edit');
+assert(observed.every((e) => e.args[1] && e.args[1].kind === 'present'), 'fs/observed presence observation');
 
 console.log('intercept: all assertions passed');
