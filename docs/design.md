@@ -46,9 +46,13 @@ A listener on the `tools/execute` around-dispatch waterfall handles `write`, `ed
      default pipeline, which raises the canonical abort error.
    The result carries the same canonical value/content shapes as the shipped tools, so
    downstream presentation keeps working.
-5. Anything else — unknown tools, paths outside every secondary directory, escalation
-   arguments (`sandbox_permissions`), missing optional services (`shell`, `jobs`),
-   or any error — falls through to `next()` and the default pipeline.
+5. Anything else — unknown tools, paths outside every secondary directory, missing
+   optional services (`shell`, `jobs`), or a failure **before** the target is
+   resolved into a secondary directory (path resolution, config lookup, service
+   lookup) — falls through to `next()` and the default pipeline. An explicit
+   escalation request (`sandbox_permissions` carrying a non-empty mode string) also
+   belongs to the default pipeline, which owns the approval flow; a `null`/empty
+   value is not a request and is intercepted normally.
 
 **Why mode parity is free:** the mode field of the standing policy is never touched.
 The DSH sandbox backends treat the per-call policy as fully specified and fence by its

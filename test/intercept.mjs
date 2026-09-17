@@ -51,6 +51,12 @@ const normalize = (p) => {
 const configStore = new Map();
 const configKey = (target) => String(target.processPath ?? target.displayPath).replace(/\\/g, '/').toLowerCase();
 
+// Injected mutation failures for the ownership tests (section 17): a thrown
+// value here stands in for any real provider refusal — a missing `old_string`,
+// a locked target, a stale version, a genuine sandbox denial.
+let editFailure = null;
+let writeFailure = null;
+
 const fsMock = {
   async resolve(path, opts) {
     const key = normalize(path);
@@ -69,6 +75,7 @@ const fsMock = {
   },
   async writeText(target, content, expected, signal, policy) {
     writes.push({ path: String(target.processPath ?? target.displayPath), content, policy });
+    if (writeFailure !== null) throw writeFailure;
     if (String(target.processPath ?? target.displayPath).replace(/\\/g, '/').includes('storages/multi-folder/')) {
       configStore.set(configKey(target), JSON.parse(content));
     }
@@ -76,6 +83,7 @@ const fsMock = {
   },
   async editText(target, edit, expected, signal, policy) {
     edits.push({ path: String(target.processPath ?? target.displayPath), edit, policy });
+    if (editFailure !== null) throw editFailure;
     return { before: edit.oldString, after: edit.newString };
   },
 };
@@ -573,5 +581,133 @@ assert(writes[writes.length - 1].policy.workspaceRoot === SEC, 'desync-cwd write
 const observed = emitted.filter((e) => e.event === 'fs/observed');
 assert(observed.length >= 2, 'fs/observed emitted for intercepted write/edit');
 assert(observed.every((e) => e.args[1] && e.args[1].kind === 'present'), 'fs/observed presence observation');
+
+// 17. Ownership rule: once a call's target is resolved inside a configured
+//     secondary directory, the interception OWNS it — a mutation failure is
+//     reported as that call's real error and is NEVER handed back to the
+//     default pipeline. The regression this guards: the default pipeline fences
+//     the call against the PRIMARY workspace root, so an ordinary local failure
+//     (a missing `old_string`, a locked target) surfaced as the bogus
+//     `[sandbox: file access denied under workspace-write mode]` marker plus a
+//     full-access escalation hint, which reads as "edit is blocked here".
+let nextCalls = 0;
+const countingNext = async () => {
+  nextCalls += 1;
+  return 'PASSTHROUGH';
+};
+
+// 17a. A non-sandbox provider failure reports its real cause and code.
+editFailure = Object.assign(new Error('cannot edit "' + SEC2 + '\\a.txt": old_string not found'), { code: 'FS_EDIT_NO_MATCH' });
+const editFailed = await execWrite(
+  { name: 'edit', arguments: { file_path: SEC2 + '\\a.txt', old_string: 'nope', new_string: 'x' }, agent, signal: undefined },
+  countingNext,
+);
+assert(editFailed !== 'PASSTHROUGH' && nextCalls === 0, 'failed secondary edit stays intercepted');
+assert(editFailed.isError === true, 'failed secondary edit is an error result');
+assert(editFailed.content[0].text === 'Error: cannot edit "' + SEC2 + '\\a.txt": old_string not found', 'real cause surfaced: ' + editFailed.content[0].text);
+assert(!editFailed.content[0].text.includes('sandbox:'), 'no spurious sandbox marker on a local failure');
+assert(editFailed.error.info && editFailed.error.info.code === 'FS_EDIT_NO_MATCH', 'FS code preserved in the error envelope');
+assert(editFailed.error.message === editFailed.content[0].text.slice('Error: '.length), 'error message matches the rendered text');
+editFailure = null;
+
+// 17b. Same for `write`.
+writeFailure = Object.assign(new Error('cannot write "' + SEC2 + '\\b.txt": the file is locked'), { code: 'FS_IO_ERROR' });
+const writeFailed = await execWrite(
+  { name: 'write', arguments: { file_path: SEC2 + '\\b.txt', content: 'x' }, agent, signal: undefined },
+  countingNext,
+);
+assert(writeFailed !== 'PASSTHROUGH' && nextCalls === 0, 'failed secondary write stays intercepted');
+assert(writeFailed.content[0].text.includes('the file is locked'), 'write real cause surfaced');
+assert(writeFailed.error.info && writeFailed.error.info.code === 'FS_IO_ERROR', 'write FS code preserved');
+writeFailure = null;
+
+// 17c. A GENUINE sandbox denial keeps the shipped marker + escalation hint.
+editFailure = Object.assign(new Error('cannot write "x": file access denied under read-only mode'), { code: 'FS_SANDBOX_DENIED' });
+const deniedEdit = await execWrite(
+  { name: 'edit', arguments: { file_path: SEC2 + '\\a.txt', old_string: 'a', new_string: 'b' }, agent, signal: undefined },
+  countingNext,
+);
+assert(deniedEdit !== 'PASSTHROUGH' && nextCalls === 0, 'denied secondary edit stays intercepted');
+assert(deniedEdit.error.info && deniedEdit.error.info.code === 'FS_SANDBOX_DENIED', 'denial code preserved');
+assert(deniedEdit.content[0].text.includes('[sandbox: file access denied under workspace-write mode]'), 'denial marker rendered');
+assert(deniedEdit.content[0].text.includes('escalation available'), 'one-shot escalation hint preserved');
+editFailure = null;
+
+// 17d. Only a REAL escalation request defers to the default pipeline; a
+//      null/empty value is not one and must not re-root the call at the
+//      primary workspace.
+const nullEscalation = await execWrite(
+  {
+    name: 'edit',
+    arguments: { file_path: SEC2 + '\\a.txt', old_string: 'a', new_string: 'b', sandbox_permissions: null, justification: null },
+    agent,
+    signal: undefined,
+  },
+  countingNext,
+);
+assert(nullEscalation !== 'PASSTHROUGH' && nullEscalation.isError === false, 'null sandbox_permissions still intercepted');
+
+const emptyEscalation = await execWrite(
+  {
+    name: 'edit',
+    arguments: { file_path: SEC2 + '\\a.txt', old_string: 'a', new_string: 'b', sandbox_permissions: '' },
+    agent,
+    signal: undefined,
+  },
+  countingNext,
+);
+assert(emptyEscalation !== 'PASSTHROUGH' && emptyEscalation.isError === false, 'empty sandbox_permissions still intercepted');
+
+const realEscalation = await execWrite(
+  {
+    name: 'edit',
+    arguments: { file_path: SEC2 + '\\a.txt', old_string: 'a', new_string: 'b', sandbox_permissions: 'danger-full-access', justification: 't' },
+    agent,
+    signal: undefined,
+  },
+  countingNext,
+);
+assert(realEscalation === 'PASSTHROUGH' && nextCalls === 1, 'real escalation still passes through');
+
+// 17e. Targets outside every secondary directory keep the default pipeline.
+const outsideAgain = await execWrite(
+  { name: 'edit', arguments: { file_path: 'C:\\Windows\\Temp\\y.txt', old_string: 'a', new_string: 'b' }, agent, signal: undefined },
+  countingNext,
+);
+assert(outsideAgain === 'PASSTHROUGH' && nextCalls === 2, 'non-secondary edit still passes through');
+
+// 17f. An UNRESOLVABLE absolute path inside a secondary directory is still
+//      answered here rather than fenced at the primary root.
+const listenersR = new Map();
+const ctxR = makeCtx(listenersR, {
+  fs: {
+    ...fsMock,
+    async resolve(path, opts) {
+      if (/unresolvable/i.test(String(path))) {
+        throw Object.assign(new Error('path contains illegal characters'), { code: 'FS_INVALID_PATH' });
+      }
+      return fsMock.resolve(path, opts);
+    },
+  },
+});
+apply(ctxR);
+const execR = listenersR.get('tools/execute')[0];
+let nextR = 0;
+const unresolvable = await execR(
+  {
+    name: 'edit',
+    arguments: { file_path: SEC2 + '\\unresolvable.txt', old_string: 'a', new_string: 'b' },
+    agent,
+    signal: undefined,
+  },
+  async () => {
+    nextR += 1;
+    return 'PASSTHROUGH';
+  },
+);
+assert(unresolvable !== 'PASSTHROUGH' && nextR === 0, 'unresolvable secondary path stays intercepted');
+assert(unresolvable.isError === true, 'unresolvable secondary path is an error result');
+assert(unresolvable.content[0].text.includes('illegal characters'), 'resolution failure surfaced');
+assert(unresolvable.error.info && unresolvable.error.info.code === 'FS_INVALID_PATH', 'resolution failure code preserved');
 
 console.log('intercept: all assertions passed');

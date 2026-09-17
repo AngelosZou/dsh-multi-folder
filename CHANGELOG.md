@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.2.3] — 2026-09-17
+
+### Fixed
+
+- Failures when editing files in secondary locations now report the actual error.
+
 ## [0.2.2] — 2026-09-02
 
 ### Fixed
