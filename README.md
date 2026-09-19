@@ -71,10 +71,10 @@ Each confined command runs under **exactly ONE writable root** — the workspace
 
 - A command whose cwd stays the **primary workspace cannot create files inside a secondary directory**. `git -C <secondary> commit`, `cd <secondary>` inside a script, `git clone <url> <secondary>`, or absolute-path writes all fail with an OS-level `Permission denied` (e.g. `fatal: Unable to create '.../.git/index.lock': Permission denied`).
 - Symmetrically, a command re-rooted to a secondary directory cannot write to the **primary workspace** (or another secondary directory) in the same invocation.
-- **Rule for file-creating commands: set `workdir` to the directory the command writes into.** For git, run the command from inside the repository (pass `workdir` pointing at it) instead of using `git -C` from the primary workspace.
+- **Rule for file-creating commands: set `workdir` to the directory the command writes into**, and pass it as an **absolute** path — a relative `workdir` is resolved against the primary workspace, and changing the process directory inside the command (`Set-Location` / `cd`) does not widen the writable root (the write then fails with an OS-level denial, Windows error 5). For git, run the command from inside the repository (pass `workdir` pointing at it) instead of using `git -C` from the primary workspace. The rule applies to `run_in_background: true` runs exactly as to foreground ones.
 - Reads are unrestricted and need no `workdir`.
 
-When a shell run ends in such a denial and references a configured secondary directory, the plugin attaches a short diagnostic hint to the tool result explaining the workdir fix.
+When a shell run ends in such a denial and references a configured secondary directory, the plugin attaches a short diagnostic hint to the tool result explaining the workdir fix. A **background** run's denial surfaces later instead — in that job's `job_output` stream, after the tool call has already returned — so read the job output and re-run it with an absolute `workdir`.
 
 ## How it works
 

@@ -42,7 +42,15 @@ A listener on the `tools/execute` around-dispatch waterfall handles `write`, `ed
      request registered through the generic jobs runtime (`ctx.jobs`) exactly like
      the shipped shell tools (`kind` = tool name, `owner` = calling agent, streamed
      reads shaped for `job_output` with sandbox markers, terminal outcome in the
-     `completed`/`killed` vocabulary). A caller-aborted call falls through to the
+     `completed`/`killed`/`failed` vocabulary). `shell.start` is **async** (it
+     publishes the handle only once launch preparation — Windows ACL grants
+     included — succeeded, and rejects when preparation is cancelled or fails), so
+     the launch is adapted to the jobs runtime's synchronous `run(): JobHooks`
+     contract the same way the shipped tools' `processJob` does: the handle is
+     awaited, the job-owned `AbortSignal` travels into `shell.resolve` (a cancelled
+     job aborts preparation, not just an already-published process), a rejected
+     preparation settles the job as `failed` with the real cause, and a read before
+     publication is empty. A caller-aborted call falls through to the
      default pipeline, which raises the canonical abort error.
    The result carries the same canonical value/content shapes as the shipped tools, so
    downstream presentation keeps working.
@@ -273,6 +281,16 @@ window.__ModuleLoader__.load({
   Lifting this to real multi-root confinement needs an upstream change
   (`SandboxExecutionPolicy` carrying extra write roots and the ACL runner
   accepting several workspace write SIDs).
+- A **relative** `workdir` never re-roots a run: the shipped shell tools resolve
+  it against the session workspace (the primary root), so only an ABSOLUTE path
+  into a secondary directory is intercepted. Likewise, changing the process
+  directory inside the command (`Set-Location` / `cd`) moves the process cwd but
+  not the ACL write root — the reported symptom is an OS-level access denial on
+  the file write (Windows error 5, e.g. `torch.save`'s
+  `open file failed with error code: 5`), not a sandbox marker. On a BACKGROUND
+  run that denial surfaces in the job's `job_output` stream after the tool call
+  has already returned, so the `tools/post-execute` hint cannot see it; the fix
+  is the same — re-run with an absolute `workdir` inside the secondary directory.
 - Intercepted secondary-directory mutations do not participate in the
   `fs/write-intent` / `fs/edit-intent` intent guards (the interception calls
   the backend unconditionally, as a full replacement of the tool body), but

@@ -57,6 +57,11 @@ const configKey = (target) => String(target.processPath ?? target.displayPath).r
 let editFailure = null;
 let writeFailure = null;
 
+// Launch-preparation controls for the background tests (section 10b): the real
+// `shell.start` is async and rejects when preparation is cancelled or fails.
+let startGate = null;
+let startFailure = null;
+
 const fsMock = {
   async resolve(path, opts) {
     const key = normalize(path);
@@ -124,8 +129,17 @@ const makeCtx = (listenersMap, overrides = {}) => ({
             sandbox: { mode: 'workspace-write', denied: false, enforcement: 'partial' },
           };
         },
-        start(spec) {
+        // The REAL contract (DSH >= 0.1.6-alpha.1) is async: `shell.start`
+        // resolves the process handle only after launch preparation (Windows
+        // ACL grants included) and rejects when preparation is cancelled or
+        // fails. A synchronous mock here is exactly what let the regression
+        // through — `proc.done` off the returned promise threw
+        // `Cannot read properties of undefined (reading 'then')`, so NO
+        // background run inside a secondary directory could start at all.
+        async start(spec) {
           shellStarts.push(spec);
+          if (startGate !== null) await startGate;
+          if (startFailure !== null) throw startFailure;
           return fakeProc;
         },
       };
@@ -222,6 +236,13 @@ assert(text.includes(SEC), 'section lists secondary dir');
 assert(text.includes('only ONE root'), 'section warns about the single writable root');
 assert(text.includes('git -C'), 'section warns against git -C from the primary workspace');
 assert(text.includes('MUST set `workdir`'), 'section requires workdir for file-creating commands');
+// The two reported workarounds: a RELATIVE workdir resolves against the primary
+// workspace (never a secondary dir), and changing the process directory inside
+// the command does not widen the writable root.
+assert(text.includes('ABSOLUTE path'), 'section requires an absolute workdir');
+assert(text.includes('relative `workdir` is resolved against the PRIMARY workspace'), 'section explains relative-workdir resolution');
+assert(text.includes('does NOT widen the writable root'), 'section explains in-command cd cannot widen the root');
+assert(text.includes('error 5'), 'section names the Windows denial symptom');
 
 // 4. Pre-step channel: notice prepended at the next step boundary.
 const preStep = listeners.get('agent/pre-step')[0];
@@ -464,6 +485,64 @@ const bgNoJobs = await execWrite(
 );
 assert(bgNoJobs === 'PASSTHROUGH', 'background without jobs service passes through');
 jobsAvailable = true;
+
+// 10b. Background LAUNCH is asynchronous and cancellable at preparation time.
+//      The regression this guards: `shell.start` became async in DSH
+//      0.1.6-alpha.1 (it resolves the handle only after launch preparation,
+//      Windows ACL grants included), so reading `proc.done` off the un-awaited
+//      promise threw `Cannot read properties of undefined (reading 'then')` and
+//      every background run in a secondary directory failed before starting.
+//      A launch that never publishes a handle must also be cancellable, and a
+//      message read before publication must be empty rather than a throw.
+let releaseStart = null;
+startGate = new Promise((resolve) => { releaseStart = resolve; });
+fakeProc = {
+  status: 'running',
+  exitCode: 0,
+  signal: null,
+  done: Promise.resolve(),
+  sandbox: undefined,
+  readOutput() { return { delta: 'late\r\n', lossy: false }; },
+  kill() { this.status = 'killed'; this.signal = 'SIGTERM'; return true; },
+};
+const bgPending = await execWrite(
+  { name: 'pwsh', arguments: { command: 'echo slow', workdir: SEC, run_in_background: true }, agent, signal: undefined },
+  nextPassthrough,
+);
+assert(bgPending !== 'PASSTHROUGH' && bgPending.isError === false, 'unpublished launch stays intercepted');
+const pendingSpec = shellStarts[shellStarts.length - 1];
+assert(pendingSpec.request.signal !== undefined && pendingSpec.request.signal !== null, 'job-owned signal reaches shell.start');
+assert(pendingSpec.request.signal.aborted === false, 'preparation signal live before cancel');
+assert(startedHooks.readOutput() === '', 'no output before the handle is published');
+startedHooks.cancel('stop');
+assert(pendingSpec.request.signal.aborted === true, 'cancel aborts in-flight preparation');
+releaseStart();
+startGate = null;
+const pendingOutcome = await startedHooks.done;
+assert(pendingOutcome.status === 'killed', 'cancel during preparation settles the job as killed: ' + JSON.stringify(pendingOutcome));
+assert(pendingOutcome.detail === 'signal: SIGTERM', 'killed outcome carries the process signal');
+
+// A rejected preparation (runner failed, ACL grant refused, launch abort) must
+// settle the job as `failed` with the real cause — never leave it running.
+startFailure = new Error('the sandbox runner failed to apply the write grant');
+const bgFailed = await execWrite(
+  { name: 'pwsh', arguments: { command: 'echo f', workdir: SEC, run_in_background: true }, agent, signal: undefined },
+  nextPassthrough,
+);
+assert(bgFailed !== 'PASSTHROUGH' && bgFailed.isError === false, 'failed launch still intercepted');
+const failedOutcome = await startedHooks.done;
+assert(failedOutcome.status === 'failed', 'preparation failure settles the job as failed: ' + JSON.stringify(failedOutcome));
+assert(failedOutcome.detail === 'the sandbox runner failed to apply the write grant', 'failure detail carries the real cause');
+startFailure = null;
+fakeProc = {
+  status: 'completed',
+  exitCode: 0,
+  signal: null,
+  done: Promise.resolve(),
+  sandbox: { mode: 'workspace-write', denied: false, enforcement: 'partial' },
+  readOutput() { return { delta: '', lossy: false }; },
+  kill() { return true; },
+};
 
 // 11. Escalation args -> passthrough (default pipeline owns escalation).
 const escalated = await execWrite(

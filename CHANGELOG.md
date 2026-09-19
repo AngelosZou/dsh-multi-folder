@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.2.4] — 2026-09-19
+
+### Fixed
+
+- Adapt background runs in secondary directories permission for DSH 0.1.6
+
 ## [0.2.3] — 2026-09-17
 
 ### Fixed
