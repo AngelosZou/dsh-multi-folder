@@ -6,6 +6,8 @@
  * Does not require the DSH runtime. Run: node test/smoke-host.mjs
  */
 import { name, inject, apply } from '../lib/index.js';
+import { existsSync } from 'node:fs';
+import { mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import os from 'node:os';
 
@@ -16,6 +18,15 @@ const typertContributions = [];
 const provided = new Map(); // serviceName -> value
 const fileStore = new Map(); // absolute path -> text
 const configDir = join(process.env.DSH_HOME || join(os.homedir(), '.dsh'), 'storages', 'multi-folder');
+// The one level the mocked fs seam can list for the browser endpoints. Names
+// are chosen to prove the sort, the hidden flag and the file filter.
+const BROWSE_ROOT = 'D:\\Projects\\node\\DSH-multi-folder';
+const SEAM_ENTRIES = [
+  { name: 'zeta', type: 'directory', target: { fakePath: BROWSE_ROOT + '\\zeta' } },
+  { name: 'readme.md', type: 'file', target: { fakePath: BROWSE_ROOT + '\\readme.md' } },
+  { name: '.hidden', type: 'directory', target: { fakePath: BROWSE_ROOT + '\\.hidden' } },
+  { name: 'alpha', type: 'directory', target: { fakePath: BROWSE_ROOT + '\\alpha' } },
+];
 
 const fsMock = {
   async resolve(path) {
@@ -23,6 +34,12 @@ const fsMock = {
   },
   processPath(target) {
     return String(target && target.fakePath !== undefined ? target.fakePath : target);
+  },
+  async listDir(target) {
+    const key = String(target && target.fakePath !== undefined ? target.fakePath : target);
+    if (key === BROWSE_ROOT) return SEAM_ENTRIES;
+    if (key === os.homedir()) return [];
+    throw new Error('ENOENT: ' + key);
   },
   async readText(target) {
     const key = String(target && target.fakePath !== undefined ? target.fakePath : target);
@@ -102,9 +119,9 @@ await executeListener(
 assert(typertContributions.length === 1, 'typert contribution registered');
 const contribution = typertContributions[0];
 assert(contribution.package === 'dsh-multi-folder' && contribution.face === 'host', 'contribution identity');
-assert(Array.isArray(contribution.invocations) && contribution.invocations.length === 4, 'four remote endpoints');
+assert(Array.isArray(contribution.invocations) && contribution.invocations.length === 6, 'six remote endpoints');
 const methods = contribution.invocations.map((d) => d.method).sort().join(',');
-assert(methods === 'add,list,remove,set', 'endpoint method roster');
+assert(methods === 'add,browse,list,makeDir,remove,set', 'endpoint method roster');
 for (const descriptor of contribution.invocations) {
   assert(descriptor.namespace === 'multiFolder' && descriptor.service === 'multiFolder', 'namespace/service: ' + descriptor.method);
   assert(descriptor.invocation && descriptor.invocation.kind === 'direct', 'direct invocation: ' + descriptor.method);
@@ -117,6 +134,10 @@ const listParams = contribution.invocations.find((d) => d.method === 'list').par
 assert(listParams.join(',') === 'workspace', 'list wire shape');
 const setParams = contribution.invocations.find((d) => d.method === 'set').parameters.map((p) => p.wire);
 assert(setParams.join(',') === 'workspace,dirs', 'set wire shape');
+const browseParams = contribution.invocations.find((d) => d.method === 'browse').parameters.map((p) => p.wire);
+assert(browseParams.join(',') === 'path', 'browse wire shape');
+const makeDirParams = contribution.invocations.find((d) => d.method === 'makeDir').parameters.map((p) => p.wire);
+assert(makeDirParams.join(',') === 'parent,name', 'makeDir wire shape');
 
 const api = provided.get('multiFolder');
 assert(api !== undefined, 'multiFolder service provided');
@@ -160,5 +181,61 @@ await api.list(undefined).then(
   () => { throw new Error('FAIL: remote list should require a workspace'); },
   (e) => { assert(String(e.message).includes('workspace is required'), 'remote workspace requirement'); },
 );
+
+// ------------------------------------------------- owned directory browser
+// `browse`/`makeDir` serve the plugin's own picker (client item 8). They must
+// run on the fs seam alone — no dependency on the composed directory picker —
+// and must never touch the configuration store.
+const storeBeforeBrowse = fileStore.size;
+
+const level = await api.browse(ws);
+assert(level.path === ws, 'browse echoes the canonical level path');
+assert(level.parent === 'D:\\Projects\\node', 'browse reports the parent level');
+assert(level.home === os.homedir(), 'browse reports the host home directory');
+assert(Array.isArray(level.entries) && level.entries.length === 3, 'browse returns directories only');
+assert(
+  level.entries.map((e) => e.name).join(',') === '.hidden,alpha,zeta',
+  'browse sorts names and keeps hidden entries flagged: ' + JSON.stringify(level.entries.map((e) => e.name)),
+);
+assert(level.entries[0].hidden === true && level.entries[1].hidden === false, 'browse flags hidden entries');
+assert(level.entries[1].path === BROWSE_ROOT + '\\alpha', 'browse joins child paths onto the level');
+assert(level.truncated === false, 'browse reports no truncation below the cap');
+
+const home = await api.browse('');
+assert(home.path === os.homedir(), 'a blank path lists the host home directory');
+
+await api.browse('relative\\path').then(
+  () => { throw new Error('FAIL: browse should reject a non-qualified path'); },
+  (e) => {
+    assert(
+      String(e.message).startsWith('multi-folder: browse requires a fully qualified path'),
+      'browse path fence: ' + String(e.message),
+    );
+  },
+);
+await api.browse('Z:\\definitely\\missing').then(
+  () => { throw new Error('FAIL: an unlistable level should reject'); },
+  (e) => { assert(String(e.message).includes('cannot list'), 'browse surfaces a listing failure: ' + String(e.message)); },
+);
+
+// Creation is a real directory creation (the fs seam has no primitive, so the
+// host uses Node's mkdir exactly like the shipped browse backend does).
+const tmpRoot = await mkdtemp(join(os.tmpdir(), 'mf-browse-'));
+try {
+  const created = await api.makeDir(tmpRoot, 'child');
+  assert(created.path === join(tmpRoot, 'child'), 'makeDir returns the created path');
+  assert(existsSync(created.path), 'makeDir created the directory');
+} finally {
+  await rm(tmpRoot, { recursive: true, force: true });
+}
+await api.makeDir(BROWSE_ROOT, 'a/b').then(
+  () => { throw new Error('FAIL: makeDir should reject a multi-segment name'); },
+  (e) => { assert(String(e.message).includes('single path segment'), 'makeDir segment fence: ' + String(e.message)); },
+);
+await api.makeDir('relative', 'child').then(
+  () => { throw new Error('FAIL: makeDir should reject a non-qualified parent'); },
+  (e) => { assert(String(e.message).includes('fully qualified parent'), 'makeDir parent fence: ' + String(e.message)); },
+);
+assert(fileStore.size === storeBeforeBrowse, 'browse/makeDir leave the configuration store untouched');
 
 console.log('smoke-host: all assertions passed');

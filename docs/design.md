@@ -14,8 +14,8 @@ agent informed. No new tools are added.
 
 | Half | File | Role |
 | ---- | ---- | ---- |
-| Host | `lib/index.js` | Config store, tool-pipeline interception, prompt section, notifications, `/multi-folder` command, sessionless `multiFolder/*` remote API |
-| Client | `lib/client.js` | Session-header button + overlay panel; session-creation page entry (input-dock chip, upstream hero chip, or fixed fallback launcher — one at a time), all driving the host through the Remote BFF / shared RPC channel |
+| Host | `lib/index.js` | Config store, tool-pipeline interception, prompt section, notifications, `/multi-folder` command, sessionless `multiFolder/*` remote API (configuration plus the browser's `browse`/`makeDir`) |
+| Client | `lib/client.js` | Session-header button + overlay panel; session-creation page entry (input-dock chip, upstream hero chip, or fixed fallback launcher — one at a time), all driving the host through the Remote BFF / shared RPC channel; the owned directory browser behind "Add directory" |
 
 The package declares both faces: `dsh.bundle.patch` (the host row inserted by
 `cordis.patch.yml`) and `dsh.client` (the web bundle at `exports["./client"]`).
@@ -120,7 +120,7 @@ opens its own **sessionless** endpoints on the shared `/api` RPC channel:
   `ctx.inject(['typert'], (t) => t.typert.register(REMOTE_CONTRIBUTION))` —
   the sanctioned manual path documented by `dsh-typert-loader` ("Manual
   `ctx.typert.register()` remains available for contributions that do not use
-  a `./typert` artifact"). All four descriptors use `src-json` codecs (no zod
+  a `./typert` artifact"). All six descriptors use `src-json` codecs (no zod
   schemas needed) with `invocation: { kind: 'direct' }`:
 
   | Endpoint | Parameters (wire) | Result |
@@ -129,6 +129,11 @@ opens its own **sessionless** endpoints on the shared `/api` RPC channel:
   | `multiFolder/add` | `workspace`, `path` | `{ workspace, dirs, changed }` |
   | `multiFolder/remove` | `workspace`, `path` | `{ workspace, dirs, changed }` |
   | `multiFolder/set` | `workspace`, `dirs` | `{ workspace, dirs, changed }` |
+  | `multiFolder/browse` | `path` | `{ path, parent, home, entries, truncated }` |
+  | `multiFolder/makeDir` | `parent`, `name` | `{ path, parent }` |
+
+  The four configuration endpoints are keyed by workspace; the last two serve
+  the plugin's own directory browser and are keyed by path instead.
 
   The workspace argument is a **path**, not a session id; the client derives
   it from the workspaces store (`WorkspaceView.path`). Business errors throw
@@ -208,6 +213,25 @@ window.__ModuleLoader__.load({
     'multiFolder/<op>', { args })` against the sessionless remote endpoints.
     The panel runs in either mode according to how it was opened; mutations
     and refreshes route per mode, and both modes share the same row/error UI.
+- Owned directory browser ("Add directory"): the plugin draws the picking
+  interaction itself and serves it from `multiFolder/browse` +
+  `multiFolder/makeDir` over the shared RPC channel, instead of asking the host
+  for a picker. One interaction therefore covers every deployment, which no
+  host picker does: `uiWorkspace.pickDirectory()` is native-only (the host
+  answers `directory-picker/unavailable` when it composed the browse backend —
+  a LAN bind, a remote client, a desktop shell), its
+  `listDirectory`/`createDirectory` twins are refused under the native
+  composition, and the shipped in-app browser is reachable only by the shell's
+  own workspace surfaces (its `directoryFlow` holes are declared and driven by
+  ui-workspace, not by plugins). Listing rides the **`fs` seam**
+  (`fs.resolve` + `fs.listDir`), which every composition provides; only
+  directories are returned, hidden entries are flagged, the level is capped at
+  1000 with a `truncated` flag, and paths must be fully qualified. Creation
+  mirrors the shipped browse backend (`dsh-host-directory-picker-browse`) by
+  calling Node's `mkdir` on a validated single segment, because the `fs` seam
+  exposes no creation primitive. Neither endpoint touches the configuration
+  store: choosing a level still commits through the mode's own channel
+  (`/multi-folder add` in a session, `multiFolder/add` on the creation page).
 - Session switch: a `React.useEffect` on `sessionId` re-points the open panel
   to the current session (reusing the per-session cache) — this also folds a
   workspace-mode panel back into session mode once the first message creates
@@ -349,7 +373,12 @@ canonicalization, the config guard, both notification channels, notice
 gating, command flows, the panel's session-switch/caching behavior, the
 sessionless remote contribution shape and behavior (list/add/set/remove,
 idempotence, sanitization, error prefixing, cross-channel cache coherence),
-and the hero/workspace-mode client flows. The client test's `slots.inject` mock
+the owned browser's host half (`browse` filtering/sorting/hidden flags, the
+fully-qualified-path fence, `makeDir` segment validation against a real
+temporary directory, and that neither endpoint writes the config store),
+and the hero/workspace-mode client flows — including the browser's own client
+flow (open at the panel workspace, enter a level, commit through the mode's
+channel, create a child and enter it, and return without a remote call). The client test's `slots.inject` mock
 is declaration-aware like the real service (a wait fires only while its slot is
 declared, and a collapse disposes the registration), so it covers all three
 session-creation seats: the dock chip on an rc.6-style shell (registration

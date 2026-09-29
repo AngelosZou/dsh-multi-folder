@@ -71,7 +71,6 @@ assert(typeof moduleExport.apply === 'function', 'client apply exported');
 // Mock ctx ---------------------------------------------------------------
 const calls = []; // remote.commands.execute calls
 const rpcCalls = []; // connection.rpc.call calls
-const pickerCalls = []; // which service served pickDirectory
 const registrations = new Map(); // slotName -> [{ options, component }]
 
 const registerEntry = (options, component) => {
@@ -200,15 +199,31 @@ const ctx = {
         if (endpoint === 'multiFolder/add' || endpoint === 'multiFolder/remove' || endpoint === 'multiFolder/set') {
           return { ok: true, value: { workspace: 'C:\\workspaces\\primary', dirs: ['C:\\workspaces\\secondary'], changed: true } };
         }
+        // The plugin's own browser endpoints: one canned level per path.
+        if (endpoint === 'multiFolder/browse') {
+          const path = payload.args.path;
+          const level = (levelPath, parent, entries) => ({
+            ok: true,
+            value: { path: levelPath, parent, home: 'C:\\Users\\tester', entries, truncated: false },
+          });
+          if (path === '' || path === 'C:\\workspaces\\primary') {
+            return level('C:\\workspaces\\primary', 'C:\\workspaces', [
+              { name: 'secondary', path: 'C:\\workspaces\\secondary', hidden: false },
+              { name: '.config', path: 'C:\\workspaces\\primary\\.config', hidden: true },
+            ]);
+          }
+          if (path === 'C:\\workspaces\\secondary') return level(path, 'C:\\workspaces', []);
+          if (path === 'C:\\workspaces\\new-child') return level(path, 'C:\\workspaces', []);
+          return { ok: false, error: { message: 'cannot list ' + path } };
+        }
+        if (endpoint === 'multiFolder/makeDir') {
+          return { ok: true, value: { path: 'C:\\workspaces\\new-child', parent: payload.args.parent } };
+        }
         return { ok: false, error: { message: 'unknown endpoint ' + endpoint } };
       },
     },
   },
   workspaces: {
-    async pickDirectory() {
-      pickerCalls.push('workspaces');
-      return 'C:\\workspaces\\secondary';
-    },
     list: {
       subscribe() { return () => {}; },
       getSnapshot() {
@@ -220,13 +235,10 @@ const ctx = {
       },
     },
   },
-  // DSH 0.1.2 moved pickDirectory onto uiWorkspace; the bundle must prefer it.
-  uiWorkspace: {
-    async pickDirectory() {
-      pickerCalls.push('uiWorkspace');
-      return 'C:\\workspaces\\secondary';
-    },
-  },
+  // No directory-picker service at all: "Add directory" must be served by the
+  // plugin's own `multiFolder/browse` + `multiFolder/makeDir` endpoints, which
+  // is what makes one interaction work under every host picker composition
+  // (native chooser, browse backend, or — as here — neither).
   sessions: {
     list: {
       subscribe() { return () => {}; },
@@ -338,7 +350,7 @@ element.props.onClick(); // toggles closed again
 assert(renderDeep(panel.component(withT({}))) === null, 'panel toggled closed');
 assert(calls.length === 1, 'reopen from cache issues no list command');
 
-// Add-directory flow (pickDirectory -> add command) --------------------------
+// Add-directory flow: the plugin's OWN browser (browse -> choose -> add command)
 element.props.onClick();
 await tick();
 let panelAfter = renderDeep(panel.component(withT({})));
@@ -359,11 +371,27 @@ walk(panelAfter);
 const addButton = buttons.find((b) => JSON.stringify(b.children || []).includes('添加目录'));
 assert(addButton, 'add button present');
 const before = calls.length;
-addButton.props.onClick(); // async — need a tick
+const rpcBeforeBrowse = rpcCalls.length;
+addButton.props.onClick(); // opens the owned browser
 await new Promise((r) => setTimeout(r, 20));
-assert(calls.length > before, 'add command fired after pickDirectory');
+assert(rpcCalls.length > rpcBeforeBrowse, 'the owned browser read a level');
+assert(rpcCalls[rpcCalls.length - 1].endpoint === 'multiFolder/browse', 'browse endpoint used');
+assert(rpcCalls[rpcCalls.length - 1].channel === '/api', 'browse rides the shared RPC channel');
+assert(rpcCalls[rpcCalls.length - 1].args.path === 'C:\\workspaces\\primary', 'browse starts at the panel workspace');
+let browsePanel = renderDeep(panel.component(withT({})));
+assert(JSON.stringify(browsePanel).includes('选择目录'), 'browser body replaces the list');
+assert(JSON.stringify(browsePanel).includes('secondary'), 'browser lists the child directory');
+assert(JSON.stringify(browsePanel).includes('.config'), 'browser lists hidden entries too');
+buttons.length = 0;
+walk(browsePanel);
+const useButton = buttons.find((b) => JSON.stringify(b.children || []).includes('选择此目录'));
+assert(useButton, 'use-this-directory button present');
+useButton.props.onClick();
+await new Promise((r) => setTimeout(r, 20));
+assert(calls.length > before, 'add command fired after choosing a level');
 assert(calls[calls.length - 1].line.includes('add'), 'add line shape');
-assert(pickerCalls[pickerCalls.length - 1] === 'uiWorkspace', 'DSH 0.1.2 uiWorkspace picker used for add');
+assert(calls[calls.length - 1].line.includes('C:\\workspaces\\primary'), 'add carries the chosen level path');
+assert(!JSON.stringify(renderDeep(panel.component(withT({})))).includes('选择此目录'), 'browser closes after a successful add');
 
 // ---- Locale support: copy and labels follow the active locale ------------
 locale.setLocale('en');
@@ -430,6 +458,21 @@ const collectButtons = (node, out = []) => {
   if (Array.isArray(node.children)) node.children.forEach((child) => collectButtons(child, out));
   if (node.props && node.props.children !== undefined) {
     (Array.isArray(node.props.children) ? node.props.children : [node.props.children]).forEach((child) => collectButtons(child, out));
+  }
+  return out;
+};
+
+const collectInputs = (node, out = []) => {
+  if (node === null || node === undefined || typeof node !== 'object') return out;
+  if (Array.isArray(node)) {
+    node.forEach((child) => collectInputs(child, out));
+    return out;
+  }
+  if (typeof node.type === 'function') return collectInputs(node.type(node.props), out);
+  if (node.type === 'input') out.push(node);
+  if (Array.isArray(node.children)) node.children.forEach((child) => collectInputs(child, out));
+  if (node.props && node.props.children !== undefined) {
+    (Array.isArray(node.props.children) ? node.props.children : [node.props.children]).forEach((child) => collectInputs(child, out));
   }
   return out;
 };
@@ -508,10 +551,54 @@ assert(dockAdd, 'anchored popover carries the add button');
 const rpcBeforeDockAdd = rpcCalls.length;
 dockAdd.props.onClick();
 await new Promise((r) => setTimeout(r, 20));
-assert(rpcCalls.length > rpcBeforeDockAdd, 'anchored add fired through the RPC channel');
+assert(rpcCalls.length > rpcBeforeDockAdd, 'anchored add opened the owned browser');
+assert(rpcCalls[rpcCalls.length - 1].endpoint === 'multiFolder/browse', 'browse endpoint from the anchored popover');
+assert(rpcCalls[rpcCalls.length - 1].args.path === 'C:\\workspaces\\primary', 'browse starts at the anchored workspace');
+// The anchored browser lists the level, and choosing it commits through the
+// sessionless endpoint — the same channel this popover already used.
+dockRow = renderDeep(dock.component(dockProps()));
+const dockUse = collectButtons(dockRow).find((b) => textOf(b.children || []).includes('选择此目录'));
+assert(dockUse, 'anchored browser carries the use button');
+const rpcBeforeCommit = rpcCalls.length;
+dockUse.props.onClick();
+await new Promise((r) => setTimeout(r, 20));
+assert(rpcCalls.length > rpcBeforeCommit, 'anchored commit fired through the RPC channel');
 assert(rpcCalls[rpcCalls.length - 1].endpoint === 'multiFolder/add', 'add endpoint');
 assert(rpcCalls[rpcCalls.length - 1].args.workspace === 'C:\\workspaces\\primary', 'add keyed by workspace path');
-assert(rpcCalls[rpcCalls.length - 1].args.path === 'C:\\workspaces\\secondary', 'add path argument');
+assert(rpcCalls[rpcCalls.length - 1].args.path === 'C:\\workspaces\\primary', 'add path argument is the chosen level');
+
+// ---- Owned browser: creating a child directory ----------------------------
+dockAdd.props.onClick();
+await new Promise((r) => setTimeout(r, 20));
+dockRow = renderDeep(dock.component(dockProps()));
+const newDirInput = collectInputs(dockRow).find((i) => i.props.placeholder === '新建文件夹名称');
+assert(newDirInput, 'browser carries the new-folder field');
+newDirInput.props.onChange({ target: { value: 'child' } });
+dockRow = renderDeep(dock.component(dockProps()));
+const createButton = collectButtons(dockRow).find((b) => textOf(b.children || []).includes('创建'));
+assert(createButton, 'browser carries the create button');
+const rpcBeforeCreate = rpcCalls.length;
+createButton.props.onClick();
+await new Promise((r) => setTimeout(r, 20));
+const createCalls = rpcCalls.slice(rpcBeforeCreate);
+assert(createCalls[0] && createCalls[0].endpoint === 'multiFolder/makeDir', 'makeDir endpoint');
+assert(
+  createCalls[0].args.parent === 'C:\\workspaces\\primary' && createCalls[0].args.name === 'child',
+  'makeDir arguments',
+);
+assert(
+  createCalls.some((c) => c.endpoint === 'multiFolder/browse' && c.args.path === 'C:\\workspaces\\new-child'),
+  'browser enters the created directory',
+);
+// Back returns to the panel without touching the configuration.
+const backButton = collectButtons(renderDeep(dock.component(dockProps())))
+  .find((b) => textOf(b.children || []).includes('← 返回'));
+assert(backButton, 'browser carries the back action');
+const rpcBeforeBack = rpcCalls.length;
+backButton.props.onClick();
+await tick();
+assert(rpcCalls.length === rpcBeforeBack, 'back performs no remote call');
+assert(textOf(renderDeep(dock.component(dockProps()))).includes('添加目录'), 'back restores the directory list');
 
 // ---- Hero seat election: a better seat takes over, still one entry --------
 declareSlot('conversation.hero.workspaceExtras');

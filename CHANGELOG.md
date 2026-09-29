@@ -2,6 +2,18 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.3.0] — 2026-09-29
+
+### Changed
+
+- "Add directory" no longer depends on the host's directory picker.
+- "Add directory" opens a browser drawn by the client half.
+
+### Removed
+
+- The client half no longer injects or uses `uiWorkspace` /
+  `workspaces.pickDirectory`
+
 ## [0.2.4] — 2026-09-19
 
 ### Fixed
