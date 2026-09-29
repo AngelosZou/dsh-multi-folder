@@ -252,7 +252,25 @@ const preStepOut = await preStep(
 );
 assert(preStepOut.kind === 'enter', 'pre-step enter');
 assert(preStepOut.messages.length === 2, 'notice prepended');
-assert(preStepOut.messages[0].source.kind === 'plugin' && preStepOut.messages[0].source.form === 'notice', 'notice source shape');
+// Session format v4 admits only PRODUCER-OWNED source kinds: the retired
+// catch-all `{ kind: 'plugin', plugin }` wrapper makes the durable log's
+// encoder throw `format v4 message requires a producer-owned source kind`,
+// which fails the run when the notice is appended. A plugin's canonical
+// spelling is the namespaced kind the v3→v4 migration itself produces.
+assert(
+  preStepOut.messages[0].source.kind === 'plugin:dsh-multi-folder'
+    && preStepOut.messages[0].source.form === 'notice',
+  'notice source shape: ' + JSON.stringify(preStepOut.messages[0].source),
+);
+assert(preStepOut.messages[0].source.kind !== 'plugin', 'notice refuses the retired plugin wrapper');
+assert(
+  !Object.prototype.hasOwnProperty.call(preStepOut.messages[0].source, 'plugin'),
+  'notice carries no legacy plugin field',
+);
+assert(
+  typeof preStepOut.messages[0].source.summary === 'string' && preStepOut.messages[0].source.summary.length > 0,
+  'notice declares the one-line summary its form requires',
+);
 assert(preStepOut.messages[1].id === 'm1', 'original message preserved');
 
 // 5. Post-execute channel: additionalContexts attached at a tool-call boundary
@@ -266,6 +284,11 @@ const postOut = await postExec(
 );
 assert(postOut.kind === 'accept', 'post-execute accept');
 assert(Array.isArray(postOut.additionalContexts) && postOut.additionalContexts.length === 1, 'notice attached as additionalContexts');
+assert(
+  postOut.additionalContexts[0].source.kind === 'plugin:dsh-multi-folder'
+    && postOut.additionalContexts[0].source.form === 'notice',
+  'additionalContexts notice carries the producer-owned source kind',
+);
 
 // 5b. Unchanged add arms nothing: next post-execute carries no additional context.
 await commandHandler({ commandId: 'c3', agent, rawInput: 'add "' + SEC2 + '"', signal: undefined });

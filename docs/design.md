@@ -165,6 +165,17 @@ opens its own **sessionless** endpoints on the shared `/api` RPC channel:
   - the next boundary consumes it — `agent/pre-step` prepends it to the entering
     message batch, or `tools/post-execute` attaches it as `additionalContexts` —
     whichever fires first. No turn is ever interrupted.
+  - the notice's `source` declares a **producer-owned kind**
+    (`kind: 'plugin:dsh-multi-folder'`, `form: 'notice'`, `summary`). Session
+    format v4 admitted only the retired catch-all wrapper `kind: 'plugin'` for
+    nothing: `sessionFormatCatalog.encodeCurrentEvent` — which the JSONL writer
+    runs on every appended event — throws
+    `format v4 message requires a producer-owned source kind` for it, failing the
+    run the moment a notice is logged. `plugin:<plugin>` is the spelling the
+    format's v3→v4 migration itself produces for a non-first-party producer
+    (`session-format-v3-to-v4/src/sources.ts`), so it is also what this plugin's
+    older logs migrate to. The `workdir` diagnosis attached at a tool-call
+    boundary is built by the same function and fixed with it.
 
 ## Client
 
@@ -370,7 +381,7 @@ window.__ModuleLoader__.load({
 `test/smoke-host.mjs`, `test/intercept.mjs`, and `test/smoke-client.mjs` run without
 the DSH runtime using mock services and a React shim. They cover interception,
 canonicalization, the config guard, both notification channels, notice
-gating, command flows, the panel's session-switch/caching behavior, the
+gating and the producer-owned notice source kind v4 admits, command flows, the panel's session-switch/caching behavior, the
 sessionless remote contribution shape and behavior (list/add/set/remove,
 idempotence, sanitization, error prefixing, cross-channel cache coherence),
 the owned browser's host half (`browse` filtering/sorting/hidden flags, the

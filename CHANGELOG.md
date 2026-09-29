@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.3.1] — 2026-09-29
+
+### Fixed
+
+- Notices now declare the producer-owned kind `plugin:dsh-multi-folder`
+
 ## [0.3.0] — 2026-09-29
 
 ### Changed
