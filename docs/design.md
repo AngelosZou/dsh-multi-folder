@@ -14,8 +14,8 @@ agent informed. No new tools are added.
 
 | Half | File | Role |
 | ---- | ---- | ---- |
-| Host | `lib/index.js` | Config store, tool-pipeline interception, prompt section, notifications, `/multi-folder` command, sessionless `multiFolder/*` remote API (configuration plus the browser's `browse`/`makeDir`) |
-| Client | `lib/client.js` | Session-header button + overlay panel; session-creation page entry (input-dock chip, upstream hero chip, or fixed fallback launcher — one at a time), all driving the host through the Remote BFF / shared RPC channel; the owned directory browser behind "Add directory" |
+| Host | `lib/index.js` | Config store, tool-pipeline interception, prompt section, notifications, `/multi-folder` command, sessionless `multiFolder/*` remote API (configuration, the browser's `browse`/`makeDir`, and the `@` menu's `listFiles`) |
+| Client | `lib/client.js` | Session-header button + overlay panel; session-creation page entry (input-dock chip, upstream hero chip, or fixed fallback launcher — one at a time), all driving the host through the Remote BFF / shared RPC channel; the owned directory browser behind "Add directory"; the companion `@` source |
 
 The package declares both faces: `dsh.bundle.patch` (the host row inserted by
 `cordis.patch.yml`) and `dsh.client` (the web bundle at `exports["./client"]`).
@@ -131,9 +131,12 @@ opens its own **sessionless** endpoints on the shared `/api` RPC channel:
   | `multiFolder/set` | `workspace`, `dirs` | `{ workspace, dirs, changed }` |
   | `multiFolder/browse` | `path` | `{ path, parent, home, entries, truncated }` |
   | `multiFolder/makeDir` | `parent`, `name` | `{ path, parent }` |
+  | `multiFolder/listFiles` | `workspace`, `query` | `{ workspace, dirs, candidates, truncated }` |
 
-  The four configuration endpoints are keyed by workspace; the last two serve
-  the plugin's own directory browser and are keyed by path instead.
+  The four configuration endpoints are keyed by workspace; `browse`/`makeDir`
+  serve the plugin's own directory browser and are keyed by path instead;
+  `listFiles` serves the `@` menu (see its own section below) and is keyed by
+  workspace plus the live query.
 
   The workspace argument is a **path**, not a session id; the client derives
   it from the workspaces store (`WorkspaceView.path`). Business errors throw
@@ -154,6 +157,85 @@ opens its own **sessionless** endpoints on the shared `/api` RPC channel:
   must therefore treat every argument as hostile — the shared core already
   does (type checks, absolute-path requirement, canonicalization, sanitization,
   primary-workspace exclusion).
+
+## Host: `@` discovery for secondary directories
+
+### Why this exists
+
+DSH's `@` file menu is **single-root by construction**, not by omission. Its
+provider (`@deepseek-ai/dsh-file-reference-local`) builds exactly one
+`WorkspaceFileSearch` per agent from `agent.session.header.cwd`, and that
+searcher refuses every candidate outside its root — a directory query resolves
+against the root and answers `undefined` for a path that escapes it (`..`
+check). Browser-side, `@deepseek-ai/dsh-client-ui-reference` registers the only
+`@` source and forwards each query to `remote.fileReferences.list`. A configured
+secondary directory is by definition outside the primary workspace, so no
+amount of typing can make the shipped menu offer one.
+
+The plugin therefore does not touch that provider at all. It publishes its own
+discovery endpoint over the files it already has read access to and contributes
+a companion menu group, which keeps both failure modes separate: a broken
+discovery path degrades to an empty group and can never affect the shipped
+files/sessions group.
+
+### Index and query rules
+
+`multiFolder/listFiles(workspace, query)` rides the same sessionless remote
+namespace as the browser endpoints and the same `fs` seam (`fs.resolve` +
+`fs.listDir`), so it needs no session and no new capability:
+
+| Rule | Why |
+| ---- | --- |
+| Breadth-first, bounded by `MAX_INDEX_ENTRIES` across all directories | one workspace's index cannot grow without limit |
+| Canonical-path deduplication (`fs.resolve` + `fs.processPath` per level) | a junction/symlink pointing back up the tree cannot re-enter the walk |
+| `INDEX_EXCLUDED` basenames never traversed | mirrors the shipped provider's defaults (`.git`, `node_modules`, build output); `lib` is deliberately absent there and therefore here |
+| Hidden entries indexed but invisible to a global query | parity with the shipped provider: `.foo` needs an explicit `.` query |
+| Per-workspace index cached with `FILE_INDEX_TTL_MS` (4 s) and a directory signature | config changes invalidate immediately; on-disk changes are caught within the TTL. Autocomplete is advisory, so staleness is invisible while rebuild cost stays bounded to one traversal per window |
+| An empty query yields the configured directories themselves | the menu's entry points; `@` alone stays cheap and does not list 30 files |
+
+Ranking mirrors the shipped provider (name beat path, directories win ties,
+then shorter paths, then name order) with **one deliberate deviation**: the
+path and subsequence rules read the *in-directory relative* path, never the
+absolute one. Every absolute path on a host shares its prefix (`D:/…`), so
+scoring it would make a one-character query match literally every candidate.
+The configured directory's own basename stays searchable at the lowest rank,
+which is what lets `@secondary-spike` narrow to that directory.
+
+A query carrying `/` lists a level instead of ranking one, and accepts two
+spellings — the absolute path a drill inserted, and a leading basename segment
+(`@secondary-spike/src/`). An ambiguous basename (two configured directories
+sharing one) resolves to nothing rather than to a guess. The decoded
+in-directory path is normalized (redundant separators and `.` segments drop)
+but **any `..` segment is refused**: without that, `@secondary/../../etc/` would
+list a directory outside every configured root while still claiming the
+configured directory as the candidates' owner — a listing that escaped the set
+the user granted, wearing a name that lies about it. The shipped provider
+refuses the same escape for the same reason.
+
+### Mention semantics
+
+A secondary directory lies outside the workspace root, so no relative path from
+that root can reach one: candidates are **absolute** paths (forward-slashed,
+which is the spelling the mention grammar and the prompt guidance already use
+for host paths). `formatMention` in the client half re-implements the shipped
+grammar — whitespace quotes the path, a quoted directory keeps its quote open
+so completion can descend, and control characters or an embedded quote make a
+path unrepresentable, so that row is dropped rather than inserted broken. The
+bundle is standalone (no build step) and cannot import that package's module,
+hence the re-implementation.
+
+### Client contribution
+
+| Decision | Reason |
+| -------- | ------ |
+| A **companion source** (`trigger: '@'`, `name: 'multi-folder'`), not a replacement | the registry keys sources by `(trigger, name)` and throws on a duplicate; the shipped `reference` source keeps answering untouched |
+| `order: 10` | the shipped group declares no order and defaults to `0`, so the secondary group sits below it |
+| `showGroupTitle: false` | the menu derives a group's title by looking its **source name** up in its own dictionary, so a visible title would read `multi-folder` — and an empty result would render that heading over an empty list |
+| A `section` on every row = the directory | rows are headed by the directory they came from, and the abbreviation of a path under the host home (`~`) keeps that heading readable |
+| `ctx.inject(['inputTriggers'], …)`, not a hard `inject` entry | a shell composing no trigger service must keep every panel surface; this contribution then simply never activates |
+| Own `codec` (identity) | `serializeReference` resolves the owner by **source name** and rejects a codec-less owner, so the source must own one even though the mention IS the model form |
+| Failures resolve to `[]` | discovery is advisory: it must never break the composer or the groups beside it |
+| Queries are per keystroke, like the shipped source | the host index makes each call an in-memory rank |
 
 ## Host: prompt injection and notifications
 
@@ -192,7 +274,11 @@ window.__ModuleLoader__.load({
 - `inject: ['remote', 'remote.commands', 'slots', 'workspaces', 'connection', 'sessions', 'locale']`; the package's
   `dsh.client.inject` lists the packages providing them
   (`@deepseek-ai/dsh-api-gateway`, `@deepseek-ai/dsh-api-remotes`,
-  `@deepseek-ai/dsh-client-connection`, `@deepseek-ai/dsh-client-locale`).
+  `@deepseek-ai/dsh-client-connection`, `@deepseek-ai/dsh-client-locale`,
+  `@deepseek-ai/dsh-client-ui-input-trigger`). The trigger registry is
+  deliberately **not** in that hard list: the `@` source is contributed through
+  `ctx.inject(['inputTriggers'], …)`, so shells without that service keep every
+  panel surface (see the `@` discovery section).
 - UI registrations: `conversation.session.header.actions` (session-scoped button),
   `shell.overlay` panel, `conversation.input.dock` chip row (session-scoped
   list entry above the composer card — the session-creation page's shipped
@@ -243,6 +329,13 @@ window.__ModuleLoader__.load({
   exposes no creation primitive. Neither endpoint touches the configuration
   store: choosing a level still commits through the mode's own channel
   (`/multi-folder add` in a session, `multiFolder/add` on the creation page).
+- `@` source: registered through `ctx.inject(['inputTriggers'], …)` (see the
+  `@` discovery section for the full decision table). It resolves the addressed
+  session's workspace from the `sessions` snapshot (`byId[sessionId].cwd`), calls
+  `multiFolder/listFiles` over the shared RPC channel, and projects each
+  candidate onto a row — a `section` naming its directory, an in-directory
+  `description`, and a `value` carrying the mention the pick inserts. Directory
+  rows set `drill`, so the shipped drill gesture descends a level.
 - Session switch: a `React.useEffect` on `sessionId` re-points the open panel
   to the current session (reusing the per-session cache) — this also folds a
   workspace-mode panel back into session mode once the first message creates
@@ -375,6 +468,34 @@ window.__ModuleLoader__.load({
   business validation server-side. DSH versions that change the Typert
   registry contract would need this contribution revisited (the tests assert
   the descriptor shape).
+- `@` discovery is a **companion group, never a merged list**. The shipped
+  provider stays single-root, so a secondary file appears under the plugin's
+  own group and its mention is an ABSOLUTE path — a relative one could not
+  reach outside the workspace root. Consequences worth knowing: the workspace
+  file list and the secondary list are ranked separately (the shipped group's
+  relevance order never mixes with ours, and only the first 30 secondary
+  candidates of a query are offered), a session whose workspace has no
+  configured directories gains an empty group that renders nothing, and the
+  index is advisory by design — it is rebuilt lazily (4 s TTL) rather than
+  invalidated on every tool result, so a file created in a secondary directory
+  can take a few seconds to appear in the menu.
+- A **symlinked or junctioned level inside a configured directory is indexed and
+  listed through the link**, where the shipped provider skips symlinked
+  directories. The fs seam's `listDir` reports only an entry's `type`, so a link
+  is not distinguishable from a directory without a second canonicalization per
+  child — and rejecting on that basis would also reject junctions that are
+  ordinary project structure (and a secondary directory reached through a
+  junctioned ancestor). The walk stays bounded regardless: canonical-path
+  deduplication prevents a link from re-entering it, and `MAX_INDEX_ENTRIES`
+  caps it. Reads are unfenced in DSH, so this grants no access the plugin's own
+  directory browser does not already have.
+- The `@` group depends on the trigger registry's source contract
+  (`trigger`/`name`/`order`/`showGroupTitle`, `candidates`/`onPick`/`codec`,
+  candidate `section`/`icon`/`drill`, and the `(trigger, name)` uniqueness key).
+  A DSH release that changes that contract would need this contribution
+  revisited; because the registration rides `ctx.inject`, a release that drops
+  the service entirely degrades to "no `@` group" instead of breaking the
+  plugin's panel.
 
 ## Tests
 
@@ -397,3 +518,14 @@ shape, in-flow row, hero-only visibility, RPC routing, anchored popover), the
 upstream hero chip taking over the moment its slot is declared, and the fixed
 launcher returning once both declarations collapse — asserting at each step that
 the other two surfaces stand down.
+
+`@` discovery is covered on both halves against a fake secondary tree behind the
+`fs` seam: the host test asserts the empty-query entry points, bare-fragment
+ranking, directory-basename narrowing, level listing by both spellings,
+recursion, hidden-entry visibility, `node_modules` exclusion, index caching
+inside the TTL, the workspace fence, config-store isolation, and that clearing
+the configuration withdraws the surface; the client test asserts the source's
+identity/order/`showGroupTitle`, its RPC routing and keying, row projection
+(section heading, `~` abbreviation, in-directory description, drill flag,
+folder icon), quote handling, the pick inserts, the identity codec, and that
+both an unrepresentable path and an RPC failure degrade quietly.

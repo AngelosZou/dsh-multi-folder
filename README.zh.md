@@ -17,6 +17,7 @@
 - 目录列表**注入系统提示词**，每次组装按会话求值；
 - 配置变更通过**不打断的消息队列**通知 Agent——在下一次消息边界（用户发送或工具调用结束）送达，且**仅在目录集合实际变化时**发送；
 - **会话开始前即可配置**：会话创建页（新会话界面）提供「多工作目录」入口（英文界面显示 "Multi-folder"），通过**无会话远程 API**（`multiFolder/*` 端点）读写同一份 per-workspace 配置——无需 session id；
+- **`@` 文件菜单能搜到副目录里的文件**：DSH 自带的 `@` 菜单只在主工作区内检索，因此本插件额外贡献自己的 `@` 分组，按目录成组列出副工作目录中的文件；
 - **不新增任何工具**：改动全部位于框架级（工具流水线拦截）与 UI 级（会话级头部入口）。
 
 ## 环境要求
@@ -65,6 +66,21 @@ dsh plugin --profile web add dsh-multi-folder
 
 Agent 无需任何额外操作：`read` / `glob` / `grep` 随处可用；`write` / `edit` / `pwsh` / `bash` 在路径（或 `workdir`）落入副目录时自动拦截并以该目录为沙箱根执行。
 
+### 用 `@` 查找副目录文件
+
+在输入框输入 `@`，除主工作区文件外，还会按每个已配置的副工作目录显示一个分组——数据来自插件自己的 `multiFolder/listFiles` 端点：
+
+| 输入 | 结果 |
+| ---- | ---- |
+| `@` | 每个已配置目录一行——即入口 |
+| `@probe` | 所有副目录中匹配的文件与目录，按其所在目录分组显示 |
+| `@secondary-spike/src/` | 列出该层级（目录优先） |
+| `@D:/repos/other/src/` | 用绝对路径写出同一层级 |
+
+选中一行会插入**绝对路径**引用（`@D:/repos/other/src/main.ts`）——因为副目录位于主工作区之外，从主工作区出发的任何相对路径都无法到达。目录行同样支持 `Tab` 逐层下钻。
+
+这是一个**并列分组，而不是对自带菜单的改动**：DSH 自己的 `@` provider 只检索会话工作区，本插件完全不改它。未配置任何副目录的工作区行为与从前完全一致。
+
 ## 权限模型
 
 每条受沙箱约束的命令只拥有**唯一一个可写根**——即本次调用被换根到的那个目录（Windows ACL runner 为每个进程树只授予一个工作区写 SID）。由此：
@@ -84,6 +100,7 @@ Agent 无需任何额外操作：`read` / `glob` / `grep` 随处可用；`write`
 - **配置与安全边界**——per-workspace 配置存储于 Agent 沙箱之外的宿主自有目录（`<DSH_HOME>/storages/multi-folder/<workspace-key>.json`）。对配置文件的任何直接 `write`/`edit` 都会收到显式拒绝——**Agent 永远无法自我授予目录，配置权仅属于用户**。详见 [SECURITY.md](SECURITY.md)。
 - **无会话远程 API**——经 `ctx.typert.register` 注册 `multiFolder` 命名空间（手写 `src-json` 描述符），并以普通对象服务 `multiFolder` 提供；`list`/`add`/`remove`/`set` 以工作区**路径**为键，与 `/multi-folder` 命令共享同一套校验核心，因此会话尚未建立时创建页也能直接配置。`browse`/`makeDir` 属于同一命名空间：它们只服务插件自带的目录浏览器，不触碰配置存储。
 - **自带目录浏览器**——「添加目录」由插件自己绘制、经 `browse`/`makeDir` 提供服务，因此在任何部署下行为一致：宿主使用原生选择器的组合、使用 browse 后端的组合（局域网/远程客户端、桌面壳），以及完全没有选择器的壳。列目录走宿主 `fs` seam（`fs.resolve` + `fs.listDir`）。
+- **`@` 发现**——同一 `fs` seam 的第二种用法：`multiFolder/listFiles` 为已配置目录建立索引（广度优先、按规范化路径去重以免 junction 绕回、排除生成物/依赖目录名、按工作区限量并短 TTL 缓存），客户端再据此注册一个并列的 `@` source。自带 provider 不做任何修改，自带分组也不受影响：触发器注册表以 `(trigger, name)` 为键，每个 source 各渲染一个分组。
 - **客户端**——手写维护的 factory bundle（`window.__ModuleLoader__.load`），无需构建工具链；面板经两条通道驱动宿主：会话内走 Remote BFF（`ctx.remote.commands.execute`），无会话端点走共享 `/api` RPC 通道（`ctx.connection.rpc.call`）。
 
 ## 目录结构
@@ -91,8 +108,8 @@ Agent 无需任何额外操作：`read` / `glob` / `grep` 随处可用；`write`
 | 路径 | 作用 |
 | ---- | ---- |
 | `cordis.patch.yml` | profile patch 层，插入 `dsh-multi-folder` 行 |
-| `lib/index.js` | 宿主插件：配置存储、工具流水线拦截、提示词注入、双通道通知、`/multi-folder` 命令、无会话 `multiFolder/*` 远程 API（配置端点 + 自带浏览器用的 `browse`/`makeDir`） |
-| `lib/client.js` | 客户端插件（factory bundle）：会话头部按钮 + 覆盖层面板 + 会话创建页入口（输入框上方的 dock 胶囊 / 上游 hero chip / 右下角兜底浮动按钮）+「添加目录」背后的自带目录浏览器 |
+| `lib/index.js` | 宿主插件：配置存储、工具流水线拦截、提示词注入、双通道通知、`/multi-folder` 命令、无会话 `multiFolder/*` 远程 API（配置端点 + 自带浏览器用的 `browse`/`makeDir` + `@` 菜单用的 `listFiles`） |
+| `lib/client.js` | 客户端插件（factory bundle）：会话头部按钮 + 覆盖层面板 + 会话创建页入口（输入框上方的 dock 胶囊 / 上游 hero chip / 右下角兜底浮动按钮）+「添加目录」背后的自带目录浏览器 + 并列的 `@` source |
 | `test/` | 免 DSH 运行时的行为测试（见开发） |
 | `docs/` | 设计与分析文档 |
 

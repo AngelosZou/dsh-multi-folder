@@ -28,6 +28,32 @@ const SEAM_ENTRIES = [
   { name: 'alpha', type: 'directory', target: { fakePath: BROWSE_ROOT + '\\alpha' } },
 ];
 
+// Fake secondary-directory tree behind the same fs seam. `node_modules` and
+// `.hidden` prove the exclusion and hidden-entry rules; `deep/` proves the
+// bounded recursion.
+const SEC = 'C:\\workspaces\\secondary';
+const SEC2 = 'C:\\workspaces\\secondary-2';
+const SEC_TREE = {
+  [SEC]: [
+    { name: 'src', type: 'directory' },
+    { name: 'README.md', type: 'file' },
+    { name: 'node_modules', type: 'directory' },
+    { name: '.hidden', type: 'directory' },
+  ],
+  [SEC + '\\src']: [
+    { name: 'deep', type: 'directory' },
+    { name: 'main.ts', type: 'file' },
+  ],
+  [SEC + '\\src\\deep']: [
+    { name: 'util.ts', type: 'file' },
+  ],
+  [SEC + '\\node_modules']: [{ name: 'pkg', type: 'directory' }],
+  [SEC + '\\node_modules\\pkg']: [{ name: 'index.js', type: 'file' }],
+  [SEC + '\\.hidden']: [{ name: 'secret.txt', type: 'file' }],
+  [SEC2]: [{ name: 'probe.txt', type: 'file' }],
+};
+let listDirCalls = 0;
+
 const fsMock = {
   async resolve(path) {
     return { fakePath: String(path) };
@@ -37,8 +63,10 @@ const fsMock = {
   },
   async listDir(target) {
     const key = String(target && target.fakePath !== undefined ? target.fakePath : target);
+    listDirCalls += 1;
     if (key === BROWSE_ROOT) return SEAM_ENTRIES;
     if (key === os.homedir()) return [];
+    if (SEC_TREE[key] !== undefined) return SEC_TREE[key];
     throw new Error('ENOENT: ' + key);
   },
   async readText(target) {
@@ -119,9 +147,9 @@ await executeListener(
 assert(typertContributions.length === 1, 'typert contribution registered');
 const contribution = typertContributions[0];
 assert(contribution.package === 'dsh-multi-folder' && contribution.face === 'host', 'contribution identity');
-assert(Array.isArray(contribution.invocations) && contribution.invocations.length === 6, 'six remote endpoints');
+assert(Array.isArray(contribution.invocations) && contribution.invocations.length === 7, 'seven remote endpoints');
 const methods = contribution.invocations.map((d) => d.method).sort().join(',');
-assert(methods === 'add,browse,list,makeDir,remove,set', 'endpoint method roster');
+assert(methods === 'add,browse,list,listFiles,makeDir,remove,set', 'endpoint method roster');
 for (const descriptor of contribution.invocations) {
   assert(descriptor.namespace === 'multiFolder' && descriptor.service === 'multiFolder', 'namespace/service: ' + descriptor.method);
   assert(descriptor.invocation && descriptor.invocation.kind === 'direct', 'direct invocation: ' + descriptor.method);
@@ -138,6 +166,8 @@ const browseParams = contribution.invocations.find((d) => d.method === 'browse')
 assert(browseParams.join(',') === 'path', 'browse wire shape');
 const makeDirParams = contribution.invocations.find((d) => d.method === 'makeDir').parameters.map((p) => p.wire);
 assert(makeDirParams.join(',') === 'parent,name', 'makeDir wire shape');
+const listFilesParams = contribution.invocations.find((d) => d.method === 'listFiles').parameters.map((p) => p.wire);
+assert(listFilesParams.join(',') === 'workspace,query', 'listFiles wire shape');
 
 const api = provided.get('multiFolder');
 assert(api !== undefined, 'multiFolder service provided');
@@ -145,9 +175,6 @@ assert(api.typertRemote && api.typertRemote.service === api, 'typertRemote bindi
 assert(api.typertRemote.serviceKey === 'multiFolder' && api.typertRemote.namespace === 'multiFolder', 'typertRemote binding fields');
 
 // Remote flows: list (empty) -> add -> idempotent add -> set -> remove.
-const SEC = 'C:\\workspaces\\secondary';
-const SEC2 = 'C:\\workspaces\\secondary-2';
-
 const initial = await api.list(ws);
 assert(Array.isArray(initial.dirs) && initial.dirs.length === 0, 'remote list starts empty');
 
@@ -237,5 +264,93 @@ await api.makeDir('relative', 'child').then(
   (e) => { assert(String(e.message).includes('fully qualified parent'), 'makeDir parent fence: ' + String(e.message)); },
 );
 assert(fileStore.size === storeBeforeBrowse, 'browse/makeDir leave the configuration store untouched');
+
+// ------------------------------------------------- @ discovery for secondaries
+// The shipped `@` file-reference menu is single-root (session cwd only), so
+// secondary directories need this plugin's own discovery endpoint. It rides
+// the fs seam, never touches the configuration store, and mirrors the shipped
+// provider's rules: generated/vendor basenames excluded, hidden entries
+// reachable only when asked for explicitly, candidates bounded.
+const storeBeforeFiles = fileStore.size;
+const configured = await api.set(ws, [SEC, SEC2]);
+assert(configured.dirs.length === 2, 'two secondary directories configured');
+
+// An empty query offers the directories themselves — the menu's entry points.
+const entryPoints = await api.listFiles(ws, '');
+assert(entryPoints.workspace === ws && entryPoints.dirs.length === 2, 'listFiles echoes workspace + dirs');
+assert(entryPoints.candidates.length === 2, 'empty query yields the configured directories');
+assert(entryPoints.candidates.every((c) => c.kind === 'directory' && c.rel === ''), 'entry points are the directories themselves');
+assert(entryPoints.candidates[0].dir === SEC && entryPoints.candidates[1].dir === SEC2, 'entry points keep configuration order');
+assert(entryPoints.candidates[0].path === 'C:/workspaces/secondary', 'mention path is forward-slashed: ' + entryPoints.candidates[0].path);
+
+// A bare fragment fuzzy-ranks across every configured directory; the first such
+// query builds the index, and the next one inside the TTL reuses it.
+listDirCalls = 0;
+const probe = await api.listFiles(ws, 'probe');
+assert(listDirCalls > 0, 'the first bare query traverses the configured directories');
+assert(probe.candidates.length === 1 && probe.candidates[0].rel === 'probe.txt' && probe.candidates[0].dir === SEC2, 'bare fragment matches by file name');
+assert(probe.candidates[0].path === 'C:/workspaces/secondary-2/probe.txt', 'candidate path joins dir + rel');
+listDirCalls = 0;
+await api.listFiles(ws, 'probe');
+assert(listDirCalls === 0, 'a later query inside the TTL reuses the cached index');
+assert(probe.truncated === false, 'listFiles reports its truncation state');
+
+// The configured directory's own basename is searchable at the lowest rank.
+const narrowed = await api.listFiles(ws, 'secondary-2');
+assert(narrowed.candidates.length === 1 && narrowed.candidates[0].dir === SEC2, 'directory basename narrows the search');
+
+// Generated/vendor basenames are never indexed; hidden entries are not offered
+// for a global query (both mirror the shipped provider).
+const vendored = await api.listFiles(ws, 'index');
+assert(vendored.candidates.length === 0, 'node_modules is excluded from the index');
+const hiddenQuery = await api.listFiles(ws, 'secret');
+assert(hiddenQuery.candidates.length === 0, 'hidden entries are invisible to a global query');
+
+// A query carrying a separator lists that level instead of ranking it.
+const byBasename = await api.listFiles(ws, 'secondary/src/');
+assert(byBasename.candidates.length === 2, 'a basename-spelled level lists its children');
+assert(byBasename.candidates.map((c) => c.rel).join(',') === 'src/deep,src/main.ts', 'directories rank first, then names: ' + JSON.stringify(byBasename.candidates));
+assert(byBasename.candidates[0].kind === 'directory' && byBasename.candidates[1].kind === 'file', 'level listing keeps file kinds');
+
+// A drill inserts an absolute mention, so the absolute spelling must resolve to
+// exactly the same level.
+const byAbsolute = await api.listFiles(ws, 'C:/workspaces/secondary/src/');
+assert(
+  JSON.stringify(byAbsolute.candidates) === JSON.stringify(byBasename.candidates),
+  'absolute and basename spellings list the same level',
+);
+const deepLevel = await api.listFiles(ws, 'secondary/src/deep/');
+assert(deepLevel.candidates.length === 1 && deepLevel.candidates[0].rel === 'src/deep/util.ts', 'recursion reaches nested levels');
+const fragment = await api.listFiles(ws, 'secondary/src/ma');
+assert(fragment.candidates.length === 1 && fragment.candidates[0].rel === 'src/main.ts', 'a fragment filters the listed level');
+
+// Hidden levels stay reachable when they are asked for by name.
+const hiddenLevel = await api.listFiles(ws, 'C:/workspaces/secondary/.hidden/');
+assert(hiddenLevel.candidates.length === 1 && hiddenLevel.candidates[0].rel === '.hidden/secret.txt', 'an explicitly named hidden level lists');
+
+// A path outside every configured directory resolves to nothing at all.
+const outside = await api.listFiles(ws, 'C:/elsewhere/');
+assert(outside.candidates.length === 0, 'a level outside every configured directory yields nothing');
+
+// A level query may not climb out of the configured set, in either spelling:
+// the owner field would otherwise lie about where the candidates came from.
+for (const escape of ['secondary/../../elsewhere/', 'C:/workspaces/secondary/../secondary-2/', 'C:/workspaces/secondary/src/../../']) {
+  const climbed = await api.listFiles(ws, escape);
+  assert(climbed.candidates.length === 0, 'a climbing level query is refused: ' + escape);
+}
+// Normalizing (not rejecting) is what handles a doubled separator.
+const doubled = await api.listFiles(ws, 'secondary//src/');
+assert(doubled.candidates.length === 2 && doubled.candidates[1].rel === 'src/main.ts', 'redundant separators normalize');
+
+await api.listFiles(undefined).then(
+  () => { throw new Error('FAIL: listFiles should require a workspace'); },
+  (e) => { assert(String(e.message).startsWith('multi-folder: workspace is required'), 'listFiles workspace fence: ' + String(e.message)); },
+);
+
+// Clearing the configuration withdraws the whole discovery surface.
+await api.set(ws, []);
+const noneLeft = await api.listFiles(ws, 'probe');
+assert(noneLeft.dirs.length === 0 && noneLeft.candidates.length === 0, 'no configured directories means no candidates');
+assert(fileStore.size === storeBeforeFiles, 'listFiles never writes the configuration store');
 
 console.log('smoke-host: all assertions passed');

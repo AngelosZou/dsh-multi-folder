@@ -17,6 +17,7 @@ A [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) plugin bun
 - The directory list is **injected into the system prompt** and re-rendered per session assembly.
 - Configuration changes notify the agent through a **non-interrupting message queue** — delivered at the next message boundary (user send or tool-call end), and **only when the directory set actually changed**.
 - Configurable **before the session starts**: the session-creation page (new-session screen) offers a Multi-folder entry that reads and edits the same per-workspace configuration through a **sessionless remote API** (`multiFolder/*` endpoints) — no session id required.
+- The **`@` file menu finds files in the configured directories**. The shipped `@` menu only ever searches the primary workspace, so this plugin contributes its own `@` group listing the secondary directories — headed by each directory.
 - **No new tools.** Everything is a framework-level change (tool-pipeline interception) plus a UI-level change (a session-scoped header entry).
 
 ## Requirements
@@ -65,6 +66,21 @@ Equivalent slash command for the user:
 
 The agent needs nothing extra: `read` / `glob` / `grep` work everywhere, and `write` / `edit` / `pwsh` / `bash` are intercepted and re-rooted automatically when the target path (or `workdir`) falls inside a configured secondary directory.
 
+### Finding secondary files with `@`
+
+Typing `@` in the composer offers the usual primary-workspace files **and** a group per configured secondary directory, fed by the plugin's own `multiFolder/listFiles` endpoint:
+
+| You type | You get |
+| -------- | ------- |
+| `@` | one row per configured directory — the entry points |
+| `@probe` | any matching file or directory across every configured directory, headed by its directory |
+| `@secondary-spike/src/` | that level, listed (directories first) |
+| `@D:/repos/other/src/` | the same level by its absolute spelling |
+
+Picking a row inserts an **absolute-path** mention (`@D:/repos/other/src/main.ts`), because a secondary directory lies outside the primary workspace and no relative path from it can reach one. Directory rows offer the usual `Tab` drill to descend.
+
+This is a **companion group, not a change to the shipped menu**: DSH's own `@` provider searches the session workspace only, and it is left exactly as it is. A workspace with no secondary directories configured behaves precisely as before.
+
 ## Permission model
 
 Each confined command runs under **exactly ONE writable root** — the workspace root the call is re-rooted to (the Windows ACL runner grants a single workspace write SID per process tree). Consequences:
@@ -84,6 +100,7 @@ When a shell run ends in such a denial and references a configured secondary dir
 - **Configuration & security boundary** — per-workspace config lives in a host-owned store outside every agent sandbox root (`<DSH_HOME>/storages/multi-folder/<workspace-key>.json`). Direct `write`/`edit` attempts against the config file are rejected with an explicit message — **the agent can never self-grant directories; configuration is user-managed by design**. See [SECURITY.md](SECURITY.md).
 - **Sessionless remote API** — a `multiFolder` namespace registered through `ctx.typert.register` (hand-written `src-json` descriptors) plus a plain-object service provided as `multiFolder`. Its `list`/`add`/`remove`/`set` methods are keyed by workspace **path** and share one validated core with the `/multi-folder` command, so the creation page can configure directories before any session exists. `browse`/`makeDir` ride the same namespace: they serve the plugin's own directory browser and never touch the configuration store.
 - **Owned directory browser** — "Add directory" is drawn by this plugin and served by `browse`/`makeDir`, so it behaves identically in every deployment: the host's native chooser composition, the browse composition (LAN or remote clients, desktop shells) and shells that compose no picker at all. Listing rides the host `fs` seam (`fs.resolve` + `fs.listDir`).
+- **`@` discovery** — a second reader of that same `fs` seam: `multiFolder/listFiles` indexes the configured directories (breadth-first, canonical-path deduplicated so a junction cannot re-enter the walk, generated/vendor basenames excluded, capped and cached per workspace with a short TTL) and the client half registers a companion `@` source over it. The shipped single-root provider is not modified, and the shipped files/sessions group is not disturbed: the trigger registry keys sources by `(trigger, name)` and renders one group each.
 - **Client** — a hand-maintained factory bundle (`window.__ModuleLoader__.load`), no build toolchain required. The panel drives the host through two channels: the Remote BFF (`ctx.remote.commands.execute`) for sessions, and the shared `/api` RPC channel (`ctx.connection.rpc.call`) for the sessionless endpoints.
 
 ## Project layout
@@ -91,8 +108,8 @@ When a shell run ends in such a denial and references a configured secondary dir
 | Path | Purpose |
 | ---- | ------- |
 | `cordis.patch.yml` | Profile patch layer inserting the `dsh-multi-folder` row |
-| `lib/index.js` | Host plugin: config store, tool-pipeline interception, prompt injection, dual-channel notifications, `/multi-folder` command, sessionless `multiFolder/*` remote API (configuration plus `browse`/`makeDir` for the owned browser) |
-| `lib/client.js` | Client plugin (factory bundle): session-header button + overlay panel + session-creation page entry (input-dock chip / upstream hero chip / fixed fallback launcher) + the owned directory browser behind "Add directory" |
+| `lib/index.js` | Host plugin: config store, tool-pipeline interception, prompt injection, dual-channel notifications, `/multi-folder` command, sessionless `multiFolder/*` remote API (configuration, the owned browser's `browse`/`makeDir`, and `listFiles` for the `@` menu) |
+| `lib/client.js` | Client plugin (factory bundle): session-header button + overlay panel + session-creation page entry (input-dock chip / upstream hero chip / fixed fallback launcher) + the owned directory browser behind "Add directory" + the companion `@` source |
 | `test/` | Runtime-free behavior tests (see Development) |
 | `docs/` | Design and analysis documents |
 

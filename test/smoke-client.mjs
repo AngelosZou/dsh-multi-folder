@@ -71,6 +71,7 @@ assert(typeof moduleExport.apply === 'function', 'client apply exported');
 // Mock ctx ---------------------------------------------------------------
 const calls = []; // remote.commands.execute calls
 const rpcCalls = []; // connection.rpc.call calls
+const rpcListFiles = []; // multiFolder/listFiles calls
 const registrations = new Map(); // slotName -> [{ options, component }]
 
 const registerEntry = (options, component) => {
@@ -138,10 +139,37 @@ const locale = {
 const t = locale.bind('multi-folder');
 const withT = (props) => Object.assign({}, props ?? {}, { t });
 
+/** The trigger registry the `@` contribution registers into. Mirrors the real
+ *  service's uniqueness key: (trigger, name). */
+const registeredSources = new Map();
+const inputTriggers = {
+  registerSource(source) {
+    const key = source.trigger + source.name;
+    if (registeredSources.has(key)) throw new Error('slash source "' + key + '" is already registered');
+    registeredSources.set(key, source);
+    return () => registeredSources.delete(key);
+  },
+};
+
 const ctx = {
   effect(fn) {
     const disposer = fn();
     return () => { if (typeof disposer === 'function') disposer(); };
+  },
+  // Soft service resolution: the bundle reaches the trigger registry through
+  // `ctx.inject`, so a shell composing no input-trigger service simply never
+  // activates the `@` contribution (and keeps its panel).
+  inject(names, callback) {
+    if (names.indexOf('inputTriggers') >= 0) {
+      callback({
+        inputTriggers,
+        effect(fn) {
+          const disposer = fn();
+          return () => { if (typeof disposer === 'function') disposer(); };
+        },
+      });
+    }
+    return () => {};
   },
   locale,
   slots: {
@@ -164,6 +192,7 @@ const ctx = {
     },
   },
   remote: {
+    $host: { home: 'C:\\Users\\tester' },
     commands: {
       async execute(sessionId, line, images) {
         calls.push({ sessionId, line, images });
@@ -218,6 +247,28 @@ const ctx = {
         }
         if (endpoint === 'multiFolder/makeDir') {
           return { ok: true, value: { path: 'C:\\workspaces\\new-child', parent: payload.args.parent } };
+        }
+        // `@` discovery for secondary directories. The roster covers a plain
+        // file, a directory, a path needing quotes, and a path the mention
+        // grammar cannot represent (an embedded quote) — plus one query the
+        // host refuses, to prove a failure degrades to an empty group.
+        if (endpoint === 'multiFolder/listFiles') {
+          rpcListFiles.push(payload.args);
+          if (payload.args.query === 'boom') return { ok: false, error: { message: 'listFiles-boom' } };
+          return {
+            ok: true,
+            value: {
+              workspace: payload.args.workspace,
+              dirs: ['C:\\workspaces\\secondary'],
+              candidates: [
+                { path: 'C:/workspaces/secondary/probe.txt', kind: 'file', dir: 'C:\\workspaces\\secondary', rel: 'probe.txt' },
+                { path: 'C:/workspaces/secondary/src', kind: 'directory', dir: 'C:\\workspaces\\secondary', rel: 'src' },
+                { path: 'C:/workspaces/secondary/src/a b.txt', kind: 'file', dir: 'C:\\workspaces\\secondary', rel: 'src/a b.txt' },
+                { path: 'C:/workspaces/secondary/od"d.txt', kind: 'file', dir: 'C:\\workspaces\\secondary', rel: 'od"d.txt' },
+                { path: 'C:/Users/tester/notes/todo.md', kind: 'file', dir: 'C:\\Users\\tester\\notes', rel: 'todo.md' },
+              ],
+            },
+          };
         }
         return { ok: false, error: { message: 'unknown endpoint ' + endpoint } };
       },
@@ -643,6 +694,93 @@ const rpcBeforeRemove = rpcCalls.length;
 wsRemoveButton.props.onClick();
 await tick();
 assert(rpcCalls.length === rpcBeforeRemove + 1 && rpcCalls[rpcCalls.length - 1].endpoint === 'multiFolder/remove', 'remove endpoint');
+
+// ---- @ discovery for secondary directories --------------------------------
+// The shipped `@` source is single-root (session cwd only), so this plugin
+// contributes a COMPANION source on the same trigger, fed by its own
+// sessionless endpoint. The registry keys sources by (trigger, name), so the
+// shipped group is untouched.
+assert(moduleExport.inject.indexOf('inputTriggers') === -1, 'inputTriggers is a soft dependency, not a hard inject entry');
+const refSource = registeredSources.get('@multi-folder');
+assert(refSource !== undefined, 'the @ discovery source is registered');
+assert(refSource.trigger === '@' && refSource.name === 'multi-folder', 'source binds the @ trigger under its own name');
+assert(refSource.order === 10, 'the companion group sorts below the shipped group (which defaults to 0)');
+// The menu titles a group by looking its source name up in its own dictionary,
+// so a visible title would read "multi-folder" — and an empty result would
+// render that heading over an empty list. Sections carry the labeling instead.
+assert(refSource.showGroupTitle === false, 'the group title row is switched off in favour of directory sections');
+assert(typeof refSource.codec.serialize === 'function', 'the source owns the reference codec for its own name');
+
+const sessionX = { sessionId: 'session-x' };
+const refRequest = (query, extra) => Object.assign(
+  { query, position: 'inline', drilled: false, signal: new AbortController().signal },
+  extra ?? {},
+);
+
+const listFilesBefore = rpcListFiles.length;
+const rows = await refSource.candidates(sessionX, refRequest('probe'));
+assert(rpcListFiles.length === listFilesBefore + 1, 'the @ source calls the discovery endpoint');
+assert(rpcListFiles[listFilesBefore].workspace === 'C:\\workspaces\\primary', 'discovery is keyed by the session workspace');
+assert(rpcListFiles[listFilesBefore].query === 'probe', 'the live query travels to the host');
+const fileCall = rpcCalls[rpcCalls.length - 1];
+assert(fileCall.channel === '/api' && fileCall.endpoint === 'multiFolder/listFiles', 'discovery rides the shared RPC channel');
+
+// Rows: one per representable candidate (the embedded-quote path is dropped).
+assert(rows.length === 4, 'an unrepresentable path is dropped: ' + JSON.stringify(rows.map((r) => r.name)));
+assert(rows[0].name === 'probe.txt' && rows[0].icon === 'file', 'file row shape');
+assert(rows[1].name === 'src/' && rows[1].icon === 'folder' && rows[1].drill === true, 'a directory row offers the drill action');
+assert(rows[2].name === 'a b.txt' && rows[2].description === 'src', 'a nested row names its in-directory parent');
+assert(rows[0].description === undefined, 'a directory-root row names no parent');
+assert(rows.every((r) => typeof r.section === 'string' && r.section !== ''), 'every row is headed by its directory (which suppresses the source title row)');
+assert(rows[0].section === 'C:\\workspaces\\secondary', 'a directory outside home keeps its full path as the heading');
+assert(rows[3].section === '~/notes', 'a directory under home is abbreviated to ~');
+assert(JSON.parse(rows[0].value).mention === '@C:/workspaces/secondary/probe.txt', 'the row value carries the mention the pick will insert');
+
+// Quoting: a space forces the quoted grammar, and an explicitly opened quote is
+// preserved for a path that would not need one.
+const spaced = (await refSource.candidates(sessionX, refRequest('a b'))).find((r) => r.name === 'a b.txt');
+assert(JSON.parse(spaced.value).mention === '@"C:/workspaces/secondary/src/a b.txt"', 'a space quotes the mention');
+const quoted = (await refSource.candidates(sessionX, refRequest('probe', { quoted: true }))).find((r) => r.name === 'probe.txt');
+assert(JSON.parse(quoted.value).mention === '@"C:/workspaces/secondary/probe.txt"', 'an open quote is preserved on pick');
+
+// Picks: the insert the pipeline executes, and the model form it serializes to.
+const pickRow = (row) => refSource.onPick({
+  candidate: row, session: sessionX, position: 'inline', via: 'menu', action: 'pick', span: {},
+});
+assert(
+  JSON.stringify(pickRow(rows[0])) === JSON.stringify({
+    insert: {
+      source: 'multi-folder',
+      ref: '@C:/workspaces/secondary/probe.txt',
+      label: 'probe.txt',
+      appearance: 'file',
+      clipboardText: '@C:/workspaces/secondary/probe.txt',
+    },
+  }),
+  'a file pick inserts the mention as an atomic chip',
+);
+const dirPick = pickRow(rows[1]);
+assert(dirPick.insert.appearance === 'folder' && dirPick.insert.label === 'src/', 'a directory pick keeps folder appearance');
+assert(dirPick.insert.ref === '@C:/workspaces/secondary/src/', 'a directory mention carries the trailing slash');
+// Two verbs on a directory row: the settling pick resolves the folder itself,
+// while the drill action refines the query in place — the mention text becomes
+// the live query, which the host then answers at its absolute spelling.
+const drilled = refSource.onPick({
+  candidate: rows[1], session: sessionX, position: 'inline', via: 'menu', action: 'drill', span: {},
+});
+assert(
+  JSON.stringify(drilled) === JSON.stringify({ text: '@C:/workspaces/secondary/src/', continue: true }),
+  'a directory drill refines the query instead of settling: ' + JSON.stringify(drilled),
+);
+assert(pickRow({ name: 'foreign' }) === undefined, 'a candidate without a source-owned value is ignored');
+assert(refSource.codec.clipboardText('@x') === '@x', 'the clipboard projection is the mention itself');
+assert(await refSource.codec.serialize('@x', new AbortController().signal) === '@x', 'the model form is the mention itself');
+
+// Failures stay inert: autocomplete never breaks the composer.
+const failedGroup = await refSource.candidates(sessionX, refRequest('boom'));
+assert(Array.isArray(failedGroup) && failedGroup.length === 0, 'a discovery failure degrades to an empty group');
+const unknownSession = await refSource.candidates({ sessionId: 'unknown-session' }, refRequest('probe'));
+assert(unknownSession.length === 0, 'a session with no known workspace yields nothing');
 
 // RPC failure surfaces in workspace mode.
 ctx.connection.rpc.call = async () => ({ ok: false, error: { message: 'rpc-boom' } });

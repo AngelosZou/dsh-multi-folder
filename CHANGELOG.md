@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented in this file.
 
+## [Unreleased] — 2026-09-29
+
+### Added
+
+- `@` discovery for secondary working directories.
+
 ## [0.3.1] — 2026-09-29
 
 ### Fixed
