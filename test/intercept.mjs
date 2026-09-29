@@ -22,6 +22,8 @@ const writes = [];
 const edits = [];
 const shellRuns = [];
 const shellStarts = [];
+/** Specs handed to the post-0.1.7 `execute()` seam (foreground AND background). */
+const shellExecutes = [];
 const jobStarts = [];
 let startedHooks = null;
 let jobsAvailable = true;
@@ -93,7 +95,7 @@ const fsMock = {
   },
 };
 
-const makeCtx = (listenersMap, overrides = {}) => ({
+const makeCtx = (listenersMap, overrides = {}, shellApi = 'legacy') => ({
   fs: fsMock,
   sandboxPolicy: {
     resolve(request) {
@@ -112,37 +114,55 @@ const makeCtx = (listenersMap, overrides = {}) => ({
   },
   get(name) {
     if (name === 'shell') {
-      return {
-        resolve(request) {
-          return { request };
-        },
-        async run(spec) {
-          shellRuns.push(spec.request);
-          return {
-            exitCode: 0,
-            signal: null,
-            timedOut: false,
-            aborted: false,
-            timeoutMs: 1000,
-            stdout: { text: 'ok\r\n', truncated: false },
-            stderr: { text: '', truncated: false },
-            sandbox: { mode: 'workspace-write', denied: false, enforcement: 'partial' },
-          };
-        },
-        // The REAL contract (DSH >= 0.1.6-alpha.1) is async: `shell.start`
-        // resolves the process handle only after launch preparation (Windows
-        // ACL grants included) and rejects when preparation is cancelled or
-        // fails. A synchronous mock here is exactly what let the regression
-        // through — `proc.done` off the returned promise threw
-        // `Cannot read properties of undefined (reading 'then')`, so NO
-        // background run inside a secondary directory could start at all.
-        async start(spec) {
-          shellStarts.push(spec);
-          if (startGate !== null) await startGate;
-          if (startFailure !== null) throw startFailure;
-          return fakeProc;
-        },
+      const resolve = (request) => ({ request });
+      /** The canonical foreground projection both seams answer with. */
+      const foregroundResult = () => ({
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        aborted: false,
+        timeoutMs: 1000,
+        stdout: { text: 'ok\r\n', truncated: false },
+        stderr: { text: '', truncated: false },
+        sandbox: { mode: 'workspace-write', denied: false, enforcement: 'partial' },
+      });
+      // The REAL contract (DSH >= 0.1.6-alpha.1) is async: the launch resolves
+      // the process handle only after launch preparation (Windows ACL grants
+      // included) and rejects when preparation is cancelled or fails. A
+      // synchronous mock here is exactly what let the regression through —
+      // `proc.done` off the returned promise threw
+      // `Cannot read properties of undefined (reading 'then')`, so NO
+      // background run inside a secondary directory could start at all.
+      const launch = async () => {
+        if (startGate !== null) await startGate;
+        if (startFailure !== null) throw startFailure;
+        return fakeProc;
       };
+      /** The retired 0.1.6 launch entry point (records the legacy seam's use). */
+      const start = (spec) => {
+        shellStarts.push(spec);
+        return launch();
+      };
+      const run = async (spec) => {
+        shellRuns.push(spec.request);
+        return foregroundResult();
+      };
+      const legacy = { resolve, run, start };
+      if (shellApi === 'legacy') return legacy;
+      // DSH >= 0.1.7-alpha.1: `run` and `start` are GONE; one `execute()`
+      // returns a `ShellExecution` — the process handle plus the foreground
+      // projection `result()`. The background arm is recognised by
+      // `onExpiry: 'none'`, the only thing that tells the executor to arm no
+      // deadline; a mock that still carried `run` would silently route the
+      // whole call down the legacy branch instead.
+      const execute = async (spec) => {
+        shellExecutes.push(spec);
+        if (spec.request.onExpiry === 'none') return launch();
+        return { result: async () => foregroundResult() };
+      };
+      // `both` stands in for a hypothetical release that keeps the retired
+      // methods alongside `execute()`: the probe must prefer the modern seam.
+      return shellApi === 'both' ? { resolve, run, start, execute } : { resolve, execute };
     }
     if (name === 'shellEnv') {
       return { collect() { return { DSH_TEST: '1' }; } };
@@ -811,5 +831,140 @@ assert(unresolvable !== 'PASSTHROUGH' && nextR === 0, 'unresolvable secondary pa
 assert(unresolvable.isError === true, 'unresolvable secondary path is an error result');
 assert(unresolvable.content[0].text.includes('illegal characters'), 'resolution failure surfaced');
 assert(unresolvable.error.info && unresolvable.error.info.code === 'FS_INVALID_PATH', 'resolution failure code preserved');
+
+// 18. DSH >= 0.1.7-alpha.1 shell seam: `ShellExecutor.run` and
+//     `ShellExecutor.start` were DELETED in favour of one `execute(spec)`
+//     returning a `ShellExecution` (the process handle plus the foreground
+//     projection `result()`), and `JobSpec.owner` changed from the calling
+//     `Agent` to its `SessionId` — `jobs-local` resolves that id through
+//     `agents.get(id)`. Every release since 0.1.7-alpha.1 (0.1.7-rc.2,
+//     0.2.0-rc.1 included) exposes ONLY `execute`, so a composition modelled
+//     here is what a current install actually looks like. The two regressions
+//     this guards, both reproduced against DSH 0.2.0-rc.1:
+//       foreground -> `Error: shell.run is not a function` (the command never ran)
+//       background -> `session "[object Object]" has no live agent`
+const sessionM = { id: 'sM', header: { cwd: WS } };
+const agentM = { id: 'sM', session: sessionM };
+const listenersM = new Map();
+const ctxM = makeCtx(listenersM, {}, 'modern');
+apply(ctxM);
+const commandHandlerM = commandDef && commandDef.handler;
+assert(commandHandlerM, 'modern composition registers the command');
+const setM = await commandHandlerM({ commandId: 'cm1', agent: agentM, rawInput: 'set "' + SEC + '"', signal: undefined });
+assert(setM.kind === 'success', 'modern config set succeeds: ' + JSON.stringify(setM));
+const execM = listenersM.get('tools/execute')[0];
+
+// 18a. Foreground: one `execute()` whose `result()` is the awaited run result.
+shellExecutes.length = 0;
+const runsBeforeM = shellRuns.length;
+const fgM = await execM(
+  { name: 'pwsh', arguments: { command: 'echo x', workdir: SEC, timeoutMs: 5000 }, agent: agentM, signal: undefined },
+  nextPassthrough,
+);
+assert(fgM !== 'PASSTHROUGH' && fgM.isError === false, 'modern foreground intercepted');
+assert(shellExecutes.length === 1, 'modern foreground goes through execute()');
+assert(shellRuns.length === runsBeforeM, 'modern foreground never touches the retired shell.run');
+assert(shellExecutes[0].request.sandboxPolicy.workspaceRoot === SEC, 'modern foreground policy re-rooted to secondary');
+assert(shellExecutes[0].request.workdir === SEC, 'modern foreground workdir canonical');
+assert(shellExecutes[0].request.onExpiry === undefined, 'a foreground call keeps the executor deadline (no onExpiry override)');
+assert(fgM.value.kind === 'foreground' && fgM.value.exitCode === 0, 'modern foreground value shape');
+assert(fgM.content[0].text.includes('ok'), 'modern foreground content carries stdout');
+assert(fgM.value.sandbox.mode === 'workspace-write' && fgM.value.sandbox.denied === false, 'modern foreground sandbox facts survive');
+
+// 18b. Background: `execute()` under `onExpiry: 'none'` (no deadline), registered
+//      with the jobs runtime and owned by the SESSION ID, not the Agent object.
+fakeProc = {
+  status: 'completed',
+  exitCode: 0,
+  signal: null,
+  done: Promise.resolve(),
+  sandbox: { mode: 'workspace-write', denied: false, enforcement: 'partial' },
+  readOutput() { return { delta: 'bg modern ok\r\n', lossy: false }; },
+  kill() { return true; },
+};
+shellExecutes.length = 0;
+const startsBeforeM = shellStarts.length;
+const jobsBeforeM = jobStarts.length;
+const bgM = await execM(
+  { name: 'pwsh', arguments: { command: 'echo bgm', workdir: SEC, run_in_background: true }, agent: agentM, signal: undefined },
+  nextPassthrough,
+);
+assert(bgM !== 'PASSTHROUGH' && bgM.isError === false, 'modern background intercepted');
+assert(shellStarts.length === startsBeforeM, 'modern background never touches the retired shell.start');
+assert(shellExecutes.length === 1, 'modern background goes through execute()');
+assert(
+  shellExecutes[0].request.onExpiry === 'none',
+  'modern background arms NO deadline — the retired start() ignored timeoutMs, and resolve() defaults onExpiry to "kill"',
+);
+assert(shellExecutes[0].request.sandboxPolicy.workspaceRoot === SEC, 'modern background policy re-rooted to secondary');
+assert(shellExecutes[0].request.workdir === SEC, 'modern background workdir canonical');
+assert(shellExecutes[0].request.dshEnv && shellExecutes[0].request.dshEnv.DSH_TEST === '1', 'modern background dshEnv collected');
+const jobM = jobStarts[jobsBeforeM];
+assert(jobStarts.length === jobsBeforeM + 1 && jobM.kind === 'pwsh' && jobM.label === 'echo bgm', 'modern job identity');
+assert(
+  jobM.owner === 'sM',
+  'modern job owner is the SessionId (an Agent object throws "has no live agent"): ' + JSON.stringify(jobM.owner),
+);
+assert(bgM.value.kind === 'background' && bgM.value.jobId === 'pwsh-' + jobStarts.length, 'modern background value shape');
+assert(bgM.content[0].text === 'started background job ' + bgM.value.jobId, 'modern background content text');
+const bgOutcomeM = await startedHooks.done;
+assert(bgOutcomeM.status === 'completed' && bgOutcomeM.detail === 'exit code: 0', 'modern job outcome completed');
+assert(startedHooks.readOutput() === 'bg modern ok\r\n', 'modern streamed read');
+
+// 18c. The modern launch keeps the async/cancellable preparation semantics:
+//      cancelling before the handle is published must settle the job as killed.
+let releaseStartM = null;
+startGate = new Promise((resolve) => { releaseStartM = resolve; });
+fakeProc = {
+  status: 'running',
+  exitCode: 0,
+  signal: null,
+  done: Promise.resolve(),
+  sandbox: undefined,
+  readOutput() { return { delta: 'late\r\n', lossy: false }; },
+  kill() { this.status = 'killed'; this.signal = 'SIGTERM'; return true; },
+};
+const bgPendingM = await execM(
+  { name: 'bash', arguments: { command: 'echo slow', workdir: SEC, run_in_background: true }, agent: agentM, signal: undefined },
+  nextPassthrough,
+);
+assert(bgPendingM !== 'PASSTHROUGH' && bgPendingM.isError === false, 'modern unpublished launch stays intercepted');
+assert(startedHooks.readOutput() === '', 'modern: no output before the handle is published');
+startedHooks.cancel('stop');
+assert(shellExecutes[shellExecutes.length - 1].request.signal.aborted === true, 'modern cancel aborts in-flight preparation');
+releaseStartM();
+startGate = null;
+const pendingOutcomeM = await startedHooks.done;
+assert(pendingOutcomeM.status === 'killed', 'modern cancel during preparation settles the job as killed: ' + JSON.stringify(pendingOutcomeM));
+
+// 18d. A rejected preparation settles the job as `failed` with the real cause.
+startFailure = new Error('the sandbox runner failed to apply the write grant');
+const bgFailedM = await execM(
+  { name: 'pwsh', arguments: { command: 'echo f', workdir: SEC, run_in_background: true }, agent: agentM, signal: undefined },
+  nextPassthrough,
+);
+assert(bgFailedM !== 'PASSTHROUGH' && bgFailedM.isError === false, 'modern failed launch still intercepted');
+const failedOutcomeM = await startedHooks.done;
+assert(failedOutcomeM.status === 'failed', 'modern preparation failure settles the job as failed: ' + JSON.stringify(failedOutcomeM));
+assert(failedOutcomeM.detail === 'the sandbox runner failed to apply the write grant', 'modern failure detail carries the real cause');
+startFailure = null;
+
+// 18e. A release carrying BOTH seams (retired methods kept alongside
+//      `execute()`) must still take the modern path — the probe keys on
+//      `execute` being present, never on `run` being absent.
+const listenersBoth = new Map();
+const ctxBoth = makeCtx(listenersBoth, {}, 'both');
+apply(ctxBoth);
+const commandHandlerBoth = commandDef && commandDef.handler;
+await commandHandlerBoth({ commandId: 'cb1', agent: agentM, rawInput: 'set "' + SEC + '"', signal: undefined });
+const execBoth = listenersBoth.get('tools/execute')[0];
+shellExecutes.length = 0;
+const runsBeforeBoth = shellRuns.length;
+const fgBoth = await execBoth(
+  { name: 'pwsh', arguments: { command: 'echo both', workdir: SEC }, agent: agentM, signal: undefined },
+  nextPassthrough,
+);
+assert(fgBoth !== 'PASSTHROUGH' && fgBoth.isError === false, 'dual-seam foreground intercepted');
+assert(shellExecutes.length === 1 && shellRuns.length === runsBeforeBoth, 'dual-seam prefers execute() over the retired run()');
 
 console.log('intercept: all assertions passed');

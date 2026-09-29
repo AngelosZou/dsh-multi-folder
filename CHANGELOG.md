@@ -2,11 +2,15 @@
 
 All notable changes to this project are documented in this file.
 
-## [Unreleased] — 2026-09-29
+## [0.3.2] — 2026-09-29
 
 ### Added
 
 - `@` discovery for secondary working directories.
+
+### Fixed
+
+- Fix bash run fail in DSH 0.1.7-alpha.1 and later version.
 
 ## [0.3.1] — 2026-09-29
 

@@ -36,13 +36,15 @@ A listener on the `tools/execute` around-dispatch waterfall handles `write`, `ed
    operation directly with `{ ...standingPolicy, workspaceRoot: <secondary dir> }`:
    - `write`/`edit` → `fs.writeText` / `fs.editText`;
    - `pwsh`/`bash`, foreground → `shell.resolve({ command, workdir, dshEnv,
-     sandboxPolicy })` + `shell.run`, with the canonical workdir so the confinement
-     root and the process cwd agree exactly;
+     sandboxPolicy })` + the seam's foreground call — `shell.run(spec)` up to
+     0.1.6-alpha.1, `(await shell.execute(spec)).result()` from 0.1.7-alpha.1 on —
+     with the canonical workdir so the confinement root and the process cwd agree
+     exactly;
    - `pwsh`/`bash`, background (`run_in_background: true`) → the same re-rooted
      request registered through the generic jobs runtime (`ctx.jobs`) exactly like
-     the shipped shell tools (`kind` = tool name, `owner` = calling agent, streamed
+     the shipped shell tools (`kind` = tool name, `owner` = the calling session's id, streamed
      reads shaped for `job_output` with sandbox markers, terminal outcome in the
-     `completed`/`killed`/`failed` vocabulary). `shell.start` is **async** (it
+     `completed`/`killed`/`failed` vocabulary). The launch is **async** (it
      publishes the handle only once launch preparation — Windows ACL grants
      included — succeeded, and rejects when preparation is cancelled or fails), so
      the launch is adapted to the jobs runtime's synchronous `run(): JobHooks`
@@ -52,6 +54,24 @@ A listener on the `tools/execute` around-dispatch waterfall handles `write`, `ed
      preparation settles the job as `failed` with the real cause, and a read before
      publication is empty. A caller-aborted call falls through to the
      default pipeline, which raises the canonical abort error.
+   - Both shell paths ride one version-adaptive seam (`shellUsesExecute`). DSH
+     **0.1.7-alpha.1** (commit `d6bebc5783`, "converge on execute()") deleted
+     `ShellExecutor.run` and `ShellExecutor.start` in favour of a single
+     `execute(spec): Promise<ShellExecution>`, and turned `JobSpec.owner` from the
+     calling `Agent` into its `SessionId` — `jobs-local` resolves that id through
+     `agents.get(id)`, so an Agent object throws
+     `session "[object Object]" has no live agent`. The retired calls map onto the
+     new seam exactly: `await shell.run(spec)` becomes
+     `await (await shell.execute(spec)).result()`, and `await shell.start(spec)`
+     becomes `await shell.execute({ ...spec, onExpiry: 'none' })` — the retired
+     `start` armed no deadline at all, while `resolve()` defaults `onExpiry` to
+     `'kill'`, so a background run that inherited the default would be killed at
+     the executor's timeout. One probe on the **presence of `execute`** selects the
+     shape (never the absence of `run`, so a release that keeps the retired methods
+     as shims still takes the modern path), which is what keeps every release from
+     0.1.2-alpha through 0.2.0-rc.1+ served by the same code. A `ShellExecution`
+     *is* the `ShellProcess` the background path already consumed, so the jobs
+     adaptation itself needed no change.
    The result carries the same canonical value/content shapes as the shipped tools, so
    downstream presentation keeps working.
 5. Anything else — unknown tools, paths outside every secondary directory, missing
