@@ -18,6 +18,7 @@
 - 配置变更通过**不打断的消息队列**通知 Agent——在下一次消息边界（用户发送或工具调用结束）送达，且**仅在目录集合实际变化时**发送；
 - **会话开始前即可配置**：会话创建页（新会话界面）提供「多工作目录」入口（英文界面显示 "Multi-folder"），通过**无会话远程 API**（`multiFolder/*` 端点）读写同一份 per-workspace 配置——无需 session id；
 - **`@` 文件菜单能搜到副目录里的文件**：DSH 自带的 `@` 菜单只在主工作区内检索，因此本插件额外贡献自己的 `@` 分组，按目录成组列出副工作目录中的文件；
+- **「添加目录」会先请系统出面**：宿主组合了原生选择器就用它，否则用宿主所在机器的系统对话框；插件自绘的浏览器保留为任何部署下都能用的兜底；
 - **不新增任何工具**：改动全部位于框架级（工具流水线拦截）与 UI 级（会话级头部入口）。
 
 ## 环境要求
@@ -50,7 +51,8 @@ dsh plugin --profile web add dsh-multi-folder
 
 | 操作 | 行为 |
 | ---- | ---- |
-| 添加目录 | 打开插件自带的目录浏览器（路径输入框 + 一级子目录列表 + 可新建文件夹） |
+| 添加目录 | 先打开**系统文件夹对话框**——宿主自带原生选择器时用它，否则用宿主所在机器的系统对话框；两者都不可用的部署才退回插件自带的浏览器（路径输入框 + 一级子目录列表 + 可新建文件夹） |
+| 在文件管理器中打开 | 在宿主机器的文件管理器（资源管理器 / Finder）中打开某个已配置目录 |
 | 移除 / 刷新 | 立即生效 |
 | 切换会话 | 面板自动切换为该会话的副工作目录 |
 | 重新打开面板 | 使用会话级缓存，不产生冗余命令行 |
@@ -98,8 +100,8 @@ Agent 无需任何额外操作：`read` / `glob` / `grep` 随处可用；`write`
 - **提示词注入**——一个有序 `systemPrompt` 段落，text provider 每次组装按会话求值，仅为配置了副目录的会话渲染。
 - **通知**——命令处理器仅在目录集合实际变化时置位 pending notice；`agent/pre-step`（前置注入进入批次）与 `tools/post-execute`（附加为 `additionalContexts`）两个通道中先触发者消费——均使用框架原生的插件来源 `notice` 上下文。
 - **配置与安全边界**——per-workspace 配置存储于 Agent 沙箱之外的宿主自有目录（`<DSH_HOME>/storages/multi-folder/<workspace-key>.json`）。对配置文件的任何直接 `write`/`edit` 都会收到显式拒绝——**Agent 永远无法自我授予目录，配置权仅属于用户**。详见 [SECURITY.md](SECURITY.md)。
-- **无会话远程 API**——经 `ctx.typert.register` 注册 `multiFolder` 命名空间（手写 `src-json` 描述符），并以普通对象服务 `multiFolder` 提供；`list`/`add`/`remove`/`set` 以工作区**路径**为键，与 `/multi-folder` 命令共享同一套校验核心，因此会话尚未建立时创建页也能直接配置。`browse`/`makeDir` 属于同一命名空间：它们只服务插件自带的目录浏览器，不触碰配置存储。
-- **自带目录浏览器**——「添加目录」由插件自己绘制、经 `browse`/`makeDir` 提供服务，因此在任何部署下行为一致：宿主使用原生选择器的组合、使用 browse 后端的组合（局域网/远程客户端、桌面壳），以及完全没有选择器的壳。列目录走宿主 `fs` seam（`fs.resolve` + `fs.listDir`）。
+- **无会话远程 API**——经 `ctx.typert.register` 注册 `multiFolder` 命名空间（手写 `src-json` 描述符），并以普通对象服务 `multiFolder` 提供；`list`/`add`/`remove`/`set` 以工作区**路径**为键，与 `/multi-folder` 命令共享同一套校验核心，因此会话尚未建立时创建页也能直接配置。`browse`/`makeDir` 属于同一命名空间：它们只服务插件自带的目录浏览器，不触碰配置存储。`pick`/`reveal` 同样如此——一个请系统出面对话框，一个在宿主文件管理器中打开某个已配置目录。
+- **系统选择器优先，自带浏览器兜底**——`multiFolder/pick` 依次尝试：宿主组合的 `directoryPicker` 服务（**仅当 `capability().kind === 'native'`**；browse 组合下它只会答 `directory-picker/unavailable`，而且自带的 Windows 选择器 worker 曾被观察到中途退出）、宿主所在机器的系统对话框（Windows 用 Vista+ 通用对话框 + `FOS_PICKFOLDERS`，macOS 用 Finder）、最后返回 `unavailable`——客户端据此打开插件自绘的浏览器。**判断放在宿主侧**是刻意的：宿主可以吃掉一次崩溃、继续下一次尝试，客户端直接调 `uiWorkspace.pickDirectory()` 做不到。Windows 助手（`lib/native-picker.ps1`）在自己的 STA 线程上设置 per-monitor DPI 感知上下文，因此对话框按显示器真实 DPI 渲染而不会被位图拉伸；另有一个看门狗在截止时间用 `WM_CLOSE` 关掉它，保证没人应答的对话框不会一直挂着请求。自带浏览器的列目录走宿主 `fs` seam（`fs.resolve` + `fs.listDir`）。
 - **`@` 发现**——同一 `fs` seam 的第二种用法：`multiFolder/listFiles` 为已配置目录建立索引（广度优先、按规范化路径去重以免 junction 绕回、排除生成物/依赖目录名、按工作区限量并短 TTL 缓存），客户端再据此注册一个并列的 `@` source。自带 provider 不做任何修改，自带分组也不受影响：触发器注册表以 `(trigger, name)` 为键，每个 source 各渲染一个分组。
 - **客户端**——手写维护的 factory bundle（`window.__ModuleLoader__.load`），无需构建工具链；面板经两条通道驱动宿主：会话内走 Remote BFF（`ctx.remote.commands.execute`），无会话端点走共享 `/api` RPC 通道（`ctx.connection.rpc.call`）。
 
@@ -108,8 +110,9 @@ Agent 无需任何额外操作：`read` / `glob` / `grep` 随处可用；`write`
 | 路径 | 作用 |
 | ---- | ---- |
 | `cordis.patch.yml` | profile patch 层，插入 `dsh-multi-folder` 行 |
-| `lib/index.js` | 宿主插件：配置存储、工具流水线拦截、提示词注入、双通道通知、`/multi-folder` 命令、无会话 `multiFolder/*` 远程 API（配置端点 + 自带浏览器用的 `browse`/`makeDir` + `@` 菜单用的 `listFiles`） |
-| `lib/client.js` | 客户端插件（factory bundle）：会话头部按钮 + 覆盖层面板 + 会话创建页入口（输入框上方的 dock 胶囊 / 上游 hero chip / 右下角兜底浮动按钮）+「添加目录」背后的自带目录浏览器 + 并列的 `@` source |
+| `lib/index.js` | 宿主插件：配置存储、工具流水线拦截、提示词注入、双通道通知、`/multi-folder` 命令、无会话 `multiFolder/*` 远程 API（配置端点 + 自带浏览器用的 `browse`/`makeDir` + `@` 菜单用的 `listFiles` + 系统选择器与文件管理器用的 `pick`/`reveal`） |
+| `lib/client.js` | 客户端插件（factory bundle）：会话头部按钮 + 覆盖层面板 + 会话创建页入口（输入框上方的 dock 胶囊 / 上游 hero chip / 右下角兜底浮动按钮）+「添加目录」的系统优先流程（其下仍是自带浏览器）+ 并列的 `@` source |
+| `lib/native-picker.ps1` | 仅 Windows 的助手：在 STA 线程上弹 Vista+ 文件夹选择器（`IFileOpenDialog` + `FOS_PICKFOLDERS`），带前台抢焦点、per-monitor DPI 感知上下文，以及到点用 `WM_CLOSE` 关闭对话框的看门狗 |
 | `test/` | 免 DSH 运行时的行为测试（见开发） |
 | `docs/` | 设计与分析文档 |
 

@@ -147,9 +147,9 @@ await executeListener(
 assert(typertContributions.length === 1, 'typert contribution registered');
 const contribution = typertContributions[0];
 assert(contribution.package === 'dsh-multi-folder' && contribution.face === 'host', 'contribution identity');
-assert(Array.isArray(contribution.invocations) && contribution.invocations.length === 7, 'seven remote endpoints');
+assert(Array.isArray(contribution.invocations) && contribution.invocations.length === 9, 'nine remote endpoints');
 const methods = contribution.invocations.map((d) => d.method).sort().join(',');
-assert(methods === 'add,browse,list,listFiles,makeDir,remove,set', 'endpoint method roster');
+assert(methods === 'add,browse,list,listFiles,makeDir,pick,remove,reveal,set', 'endpoint method roster');
 for (const descriptor of contribution.invocations) {
   assert(descriptor.namespace === 'multiFolder' && descriptor.service === 'multiFolder', 'namespace/service: ' + descriptor.method);
   assert(descriptor.invocation && descriptor.invocation.kind === 'direct', 'direct invocation: ' + descriptor.method);
@@ -168,6 +168,10 @@ const makeDirParams = contribution.invocations.find((d) => d.method === 'makeDir
 assert(makeDirParams.join(',') === 'parent,name', 'makeDir wire shape');
 const listFilesParams = contribution.invocations.find((d) => d.method === 'listFiles').parameters.map((p) => p.wire);
 assert(listFilesParams.join(',') === 'workspace,query', 'listFiles wire shape');
+const pickParams = contribution.invocations.find((d) => d.method === 'pick').parameters.map((p) => p.wire);
+assert(pickParams.join(',') === 'cwd', 'pick wire shape');
+const revealParams = contribution.invocations.find((d) => d.method === 'reveal').parameters.map((p) => p.wire);
+assert(revealParams.join(',') === 'path', 'reveal wire shape');
 
 const api = provided.get('multiFolder');
 assert(api !== undefined, 'multiFolder service provided');
@@ -345,6 +349,60 @@ assert(doubled.candidates.length === 2 && doubled.candidates[1].rel === 'src/mai
 await api.listFiles(undefined).then(
   () => { throw new Error('FAIL: listFiles should require a workspace'); },
   (e) => { assert(String(e.message).startsWith('multi-folder: workspace is required'), 'listFiles workspace fence: ' + String(e.message)); },
+);
+
+// --------------------------------------------------- system folder picker
+// `pick` asks the host's OWN native picker first, and only reaches for an OS
+// dialog when that cannot answer. The fallback path is exercised with the
+// platform reported as one the helper does not support, so that a test run can
+// never open a real window on a developer's machine; if a future Node makes
+// `process.platform` read-only, this fails loudly instead of doing so.
+const realGet = mockCtx.get;
+const platformDescriptor = Object.getOwnPropertyDescriptor(process, 'platform');
+if (platformDescriptor === undefined || platformDescriptor.configurable === false) {
+  throw new Error('FAIL: process.platform is not configurable, so the OS-dialog fallback cannot be exercised safely');
+}
+const asUnsupportedPlatform = (body) => {
+  Object.defineProperty(process, 'platform', { value: 'sunos', configurable: true });
+  return Promise.resolve().then(body).finally(() => {
+    Object.defineProperty(process, 'platform', { value: platformDescriptor.value, configurable: true });
+  });
+};
+
+// A native composition answers, and is the ONLY thing asked.
+mockCtx.get = (n) => (n === 'directoryPicker'
+  ? { capability: () => ({ kind: 'native', pick: async () => 'D:\\picked\\by\\host' }) }
+  : undefined);
+const pickedNative = await api.pick(ws);
+assert(pickedNative.via === 'host-native' && pickedNative.path === 'D:\\picked\\by\\host', 'a native composition answers the pick');
+
+// The shipped Windows chooser worker has been observed to exit mid-call: that
+// failure must be swallowed and the next attempt made, never propagated.
+mockCtx.get = (n) => (n === 'directoryPicker'
+  ? { capability: () => ({ kind: 'native', pick: async () => { throw new Error('directory picker failed: worker exited'); } }) }
+  : undefined);
+const afterCrash = await asUnsupportedPlatform(() => api.pick(ws));
+assert(afterCrash.via === 'unavailable' && afterCrash.path === null, 'a crashing native picker degrades instead of throwing');
+
+// A browse-only composition is NOT asked at all: it would answer
+// `directory-picker/unavailable`, and asking costs a round trip.
+let browseAsked = 0;
+mockCtx.get = (n) => (n === 'directoryPicker'
+  ? { capability: () => ({ kind: 'browse', list: async () => { browseAsked += 1; return {}; } }) }
+  : undefined);
+const noPicker = await asUnsupportedPlatform(() => api.pick());
+assert(browseAsked === 0 && noPicker.via === 'unavailable', 'a browse-only composition is never asked');
+
+// An absent service is not an error either, and the start directory is optional.
+mockCtx.get = realGet;
+const absent = await asUnsupportedPlatform(() => api.pick());
+assert(absent.via === 'unavailable' && absent.path === null, 'an absent picker service degrades quietly');
+
+// `reveal` validates its argument before spawning anything, so a bad call can
+// never open a file manager.
+await api.reveal('relative\\path').then(
+  () => { throw new Error('FAIL: reveal should refuse a relative path'); },
+  (e) => { assert(/reveal requires a fully qualified path/.test(String(e.message)), 'reveal fence: ' + String(e.message)); },
 );
 
 // Clearing the configuration withdraws the whole discovery surface.

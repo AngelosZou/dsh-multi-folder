@@ -330,25 +330,49 @@ window.__ModuleLoader__.load({
     'multiFolder/<op>', { args })` against the sessionless remote endpoints.
     The panel runs in either mode according to how it was opened; mutations
     and refreshes route per mode, and both modes share the same row/error UI.
-- Owned directory browser ("Add directory"): the plugin draws the picking
-  interaction itself and serves it from `multiFolder/browse` +
-  `multiFolder/makeDir` over the shared RPC channel, instead of asking the host
-  for a picker. One interaction therefore covers every deployment, which no
-  host picker does: `uiWorkspace.pickDirectory()` is native-only (the host
-  answers `directory-picker/unavailable` when it composed the browse backend —
-  a LAN bind, a remote client, a desktop shell), its
+- Directory picking ("Add directory"): `multiFolder/pick` tries, in order, the
+  host's composed `directoryPicker` service — but only when
+  `capability().kind === 'native'`, because under the browse composition that
+  service answers `directory-picker/unavailable` (a LAN bind, a remote client, a
+  desktop shell) and the shipped Windows chooser worker has been observed to
+  exit mid-call — then the OS dialog of the host machine (the Vista+ common item
+  dialog with `FOS_PICKFOLDERS` on Windows, through `lib/native-picker.ps1` on
+  its own STA thread; Finder through `osascript` on macOS), and finally reports
+  `via: 'unavailable'`, which is the client half's cue to open the browser this
+  plugin draws itself and serves from `multiFolder/browse` + `multiFolder/makeDir`
+  over the shared RPC channel. The order is what keeps ONE interaction valid in
+  every deployment, which no host picker does on its own:
+  `uiWorkspace.pickDirectory()` is native-only (the host answers
+  `directory-picker/unavailable` when it composed the browse backend), its
   `listDirectory`/`createDirectory` twins are refused under the native
   composition, and the shipped in-app browser is reachable only by the shell's
   own workspace surfaces (its `directoryFlow` holes are declared and driven by
-  ui-workspace, not by plugins). Listing rides the **`fs` seam**
-  (`fs.resolve` + `fs.listDir`), which every composition provides; only
-  directories are returned, hidden entries are flagged, the level is capped at
-  1000 with a `truncated` flag, and paths must be fully qualified. Creation
-  mirrors the shipped browse backend (`dsh-host-directory-picker-browse`) by
-  calling Node's `mkdir` on a validated single segment, because the `fs` seam
-  exposes no creation primitive. Neither endpoint touches the configuration
-  store: choosing a level still commits through the mode's own channel
-  (`/multi-folder add` in a session, `multiFolder/add` on the creation page).
+  ui-workspace, not by plugins). Deciding on the HOST side is deliberate: a
+  chooser that refuses or crashes can be swallowed there and the next attempt
+  made, which a client-side call cannot do. The result's `via` separates a
+  completed system dialog — where a null `path` means the user dismissed it, so
+  nothing is added and nothing opened — from `unavailable`, the fall-back case.
+- The owned browser's listing rides the **`fs` seam** (`fs.resolve` +
+  `fs.listDir`), which every composition provides; only directories are
+  returned, hidden entries are flagged, the level is capped at 1000 with a
+  `truncated` flag, and paths must be fully qualified. Creation mirrors the
+  shipped browse backend (`dsh-host-directory-picker-browse`) by calling Node's
+  `mkdir` on a validated single segment, because the `fs` seam exposes no
+  creation primitive. Neither endpoint touches the configuration store: choosing
+  a level still commits through the mode's own channel (`/multi-folder add` in a
+  session, `multiFolder/add` on the creation page).
+- The Windows helper (`lib/native-picker.ps1`): the dialog runs on its own STA
+  thread; that thread sets `DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2` before
+  the window is created, because the PowerShell host is DPI-UNAWARE and an
+  untouched dialog is drawn at 96 DPI and then bitmap-stretched by Windows on a
+  scaled display; the helper assists the dialog to the foreground (the caller is
+  usually a background host process); and a watchdog dismisses it with
+  `WM_CLOSE` on a deadline — `IFileDialog::Close` is refused across apartments
+  and silently left the dialog on screen, and `FindWindow` + `PostMessage` are
+  the thread-agnostic equivalent. `multiFolder/reveal` opens the host's file
+  manager at one configured directory with a detached `explorer.exe` / `open` /
+  `xdg-open`, which is fire-and-forget by design: the file manager outlives the
+  call and its exit status says nothing.
 - `@` source: registered through `ctx.inject(['inputTriggers'], …)` (see the
   `@` discovery section for the full decision table). It resolves the addressed
   session's workspace from the `sessions` snapshot (`byId[sessionId].cwd`), calls

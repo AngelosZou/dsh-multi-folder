@@ -2,6 +2,24 @@
 
 All notable changes to this project are documented in this file.
 
+## [Unreleased]
+
+### Added
+
+- "Add directory" now asks the SYSTEM for a folder first: the host's own native
+  directory picker when its composition provides one, then the OS dialog of the
+  host machine (`lib/native-picker.ps1` on Windows, Finder via `osascript` on
+  macOS).
+- `multiFolder/pick` and `multiFolder/reveal` sessionless endpoints, and an
+  "open in the host file manager" action on every configured row.
+
+### Changed
+
+- "Add directory" is no longer the owned browser alone. A system dialog the user
+  dismissed adds nothing and opens nothing; only a deployment with no system
+  picker at all falls back to the browser, which stays the interaction that
+  always works.
+
 ## [0.3.2] — 2026-09-29
 
 ### Added
