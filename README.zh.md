@@ -50,7 +50,8 @@ dsh plugin --profile web add dsh-multi-folder
 
 | 操作 | 行为 |
 | ---- | ---- |
-| 添加目录 | 打开插件自带的目录浏览器（路径输入框 + 一级子目录列表 + 可新建文件夹） |
+| 添加目录 | `native` 使用系统文件夹对话框，失败后尝试宿主对话框；`browse` 直接打开插件自带浏览器（路径输入框 + 一级子目录列表 + 可新建文件夹） |
+| 在文件管理器中打开 | 在宿主机器的文件管理器（资源管理器 / Finder）中打开某个已配置目录 |
 | 移除 / 刷新 | 立即生效 |
 | 切换会话 | 面板自动切换为该会话的副工作目录 |
 | 重新打开面板 | 使用会话级缓存，不产生冗余命令行 |
@@ -98,8 +99,8 @@ Agent 无需任何额外操作：`read` / `glob` / `grep` 随处可用；`write`
 - **提示词注入**——一个有序 `systemPrompt` 段落，text provider 每次组装按会话求值，仅为配置了副目录的会话渲染。
 - **通知**——命令处理器仅在目录集合实际变化时置位 pending notice；`agent/pre-step`（前置注入进入批次）与 `tools/post-execute`（附加为 `additionalContexts`）两个通道中先触发者消费——均使用框架原生的插件来源 `notice` 上下文。
 - **配置与安全边界**——per-workspace 配置存储于 Agent 沙箱之外的宿主自有目录（`<DSH_HOME>/storages/multi-folder/<workspace-key>.json`）。对配置文件的任何直接 `write`/`edit` 都会收到显式拒绝——**Agent 永远无法自我授予目录，配置权仅属于用户**。详见 [SECURITY.md](SECURITY.md)。
-- **无会话远程 API**——经 `ctx.typert.register` 注册 `multiFolder` 命名空间（手写 `src-json` 描述符），并以普通对象服务 `multiFolder` 提供；`list`/`add`/`remove`/`set` 以工作区**路径**为键，与 `/multi-folder` 命令共享同一套校验核心，因此会话尚未建立时创建页也能直接配置。`browse`/`makeDir` 属于同一命名空间：它们只服务插件自带的目录浏览器，不触碰配置存储。
-- **自带目录浏览器**——「添加目录」由插件自己绘制、经 `browse`/`makeDir` 提供服务，因此在任何部署下行为一致：宿主使用原生选择器的组合、使用 browse 后端的组合（局域网/远程客户端、桌面壳），以及完全没有选择器的壳。列目录走宿主 `fs` seam（`fs.resolve` + `fs.listDir`）。
+- **无会话远程 API**——经 `ctx.typert.register` 注册 `multiFolder` 命名空间（手写 `src-json` 描述符），并以普通对象服务 `multiFolder` 提供；`list`/`add`/`remove`/`set` 以工作区**路径**为键，与 `/multi-folder` 命令共享同一套校验核心，因此会话尚未建立时创建页也能直接配置。`browse`/`makeDir` 服务于自带浏览器；`pick`/`reveal` 负责选择或打开宿主目录。
+- **目录选择**——`multiFolder/pick` 先调用宿主的 `native` 选择器，失败后尝试系统对话框；`browse` 能力直接打开客户端浏览器。关闭面板会取消请求；取消系统对话框不会添加目录。Windows 助手为 `lib/native-picker.ps1`。
 - **`@` 发现**——同一 `fs` seam 的第二种用法：`multiFolder/listFiles` 为已配置目录建立索引（广度优先、按规范化路径去重以免 junction 绕回、排除生成物/依赖目录名、按工作区限量并短 TTL 缓存），客户端再据此注册一个并列的 `@` source。自带 provider 不做任何修改，自带分组也不受影响：触发器注册表以 `(trigger, name)` 为键，每个 source 各渲染一个分组。
 - **客户端**——手写维护的 factory bundle（`window.__ModuleLoader__.load`），无需构建工具链；面板经两条通道驱动宿主：会话内走 Remote BFF（`ctx.remote.commands.execute`），无会话端点走共享 `/api` RPC 通道（`ctx.connection.rpc.call`）。
 
@@ -108,8 +109,9 @@ Agent 无需任何额外操作：`read` / `glob` / `grep` 随处可用；`write`
 | 路径 | 作用 |
 | ---- | ---- |
 | `cordis.patch.yml` | profile patch 层，插入 `dsh-multi-folder` 行 |
-| `lib/index.js` | 宿主插件：配置存储、工具流水线拦截、提示词注入、双通道通知、`/multi-folder` 命令、无会话 `multiFolder/*` 远程 API（配置端点 + 自带浏览器用的 `browse`/`makeDir` + `@` 菜单用的 `listFiles`） |
-| `lib/client.js` | 客户端插件（factory bundle）：会话头部按钮 + 覆盖层面板 + 会话创建页入口（输入框上方的 dock 胶囊 / 上游 hero chip / 右下角兜底浮动按钮）+「添加目录」背后的自带目录浏览器 + 并列的 `@` source |
+| `lib/index.js` | 宿主插件：配置、工具拦截、远程 API、目录选择器和文件管理器 |
+| `lib/client.js` | 客户端面板、自带浏览器和并列 `@` 来源 |
+| `lib/native-picker.ps1` | Windows 文件夹选择器助手 |
 | `test/` | 免 DSH 运行时的行为测试（见开发） |
 | `docs/` | 设计与分析文档 |
 

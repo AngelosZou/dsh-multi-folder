@@ -140,7 +140,7 @@ opens its own **sessionless** endpoints on the shared `/api` RPC channel:
   `ctx.inject(['typert'], (t) => t.typert.register(REMOTE_CONTRIBUTION))` —
   the sanctioned manual path documented by `dsh-typert-loader` ("Manual
   `ctx.typert.register()` remains available for contributions that do not use
-  a `./typert` artifact"). All six descriptors use `src-json` codecs (no zod
+  a `./typert` artifact"). All nine descriptors use `src-json` codecs (no zod
   schemas needed) with `invocation: { kind: 'direct' }`:
 
   | Endpoint | Parameters (wire) | Result |
@@ -152,6 +152,8 @@ opens its own **sessionless** endpoints on the shared `/api` RPC channel:
   | `multiFolder/browse` | `path` | `{ path, parent, home, entries, truncated }` |
   | `multiFolder/makeDir` | `parent`, `name` | `{ path, parent }` |
   | `multiFolder/listFiles` | `workspace`, `query` | `{ workspace, dirs, candidates, truncated }` |
+  | `multiFolder/pick` | `cwd` (plus transport cancellation) | `{ path, via }` |
+  | `multiFolder/reveal` | `path` | `{ path, via }` |
 
   The four configuration endpoints are keyed by workspace; `browse`/`makeDir`
   serve the plugin's own directory browser and are keyed by path instead;
@@ -330,25 +332,25 @@ window.__ModuleLoader__.load({
     'multiFolder/<op>', { args })` against the sessionless remote endpoints.
     The panel runs in either mode according to how it was opened; mutations
     and refreshes route per mode, and both modes share the same row/error UI.
-- Owned directory browser ("Add directory"): the plugin draws the picking
-  interaction itself and serves it from `multiFolder/browse` +
-  `multiFolder/makeDir` over the shared RPC channel, instead of asking the host
-  for a picker. One interaction therefore covers every deployment, which no
-  host picker does: `uiWorkspace.pickDirectory()` is native-only (the host
-  answers `directory-picker/unavailable` when it composed the browse backend —
-  a LAN bind, a remote client, a desktop shell), its
-  `listDirectory`/`createDirectory` twins are refused under the native
-  composition, and the shipped in-app browser is reachable only by the shell's
-  own workspace surfaces (its `directoryFlow` holes are declared and driven by
-  ui-workspace, not by plugins). Listing rides the **`fs` seam**
-  (`fs.resolve` + `fs.listDir`), which every composition provides; only
-  directories are returned, hidden entries are flagged, the level is capped at
-  1000 with a `truncated` flag, and paths must be fully qualified. Creation
-  mirrors the shipped browse backend (`dsh-host-directory-picker-browse`) by
-  calling Node's `mkdir` on a validated single segment, because the `fs` seam
-  exposes no creation primitive. Neither endpoint touches the configuration
-  store: choosing a level still commits through the mode's own channel
-  (`/multi-folder add` in a session, `multiFolder/add` on the creation page).
+- Directory picking: `multiFolder/pick` calls the host's `native` picker with
+  the RPC abort signal, then tries a host OS dialog if that picker fails.
+  A `browse` capability returns `unavailable` immediately, so remote clients
+  open the plugin's browser instead of a dialog on the host. A completed dialog
+  returns a path or `null` on cancellation; closing the panel aborts the request.
+- The owned browser's listing rides the **`fs` seam** (`fs.resolve` +
+  `fs.listDir`), which every composition provides; only directories are
+  returned, hidden entries are flagged, the level is capped at 1000 with a
+  `truncated` flag, and paths must be fully qualified. Creation mirrors the
+  shipped browse backend (`dsh-host-directory-picker-browse`) by calling Node's
+  `mkdir` on a validated single segment, because the `fs` seam exposes no
+  creation primitive. Neither endpoint touches the configuration store: choosing
+  a level still commits through the mode's own channel (`/multi-folder add` in a
+  session, `multiFolder/add` on the creation page).
+- On Windows, `lib/native-picker.ps1` uses `IFileOpenDialog` on an STA thread,
+  sets per-monitor DPI awareness, and closes an unanswered dialog on a deadline.
+  It exits 0 for a selection or dismissal and nonzero when `Show()` fails.
+  `multiFolder/reveal` checks `fs.stat` before opening an existing directory
+  with the host file manager.
 - `@` source: registered through `ctx.inject(['inputTriggers'], …)` (see the
   `@` discovery section for the full decision table). It resolves the addressed
   session's workspace from the `sessions` snapshot (`byId[sessionId].cwd`), calls
