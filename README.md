@@ -50,7 +50,8 @@ A Multi-folder button appears in the session header, and a second entry appears 
 
 | Action | Behavior |
 | ------ | -------- |
-| Add directory | Opens the plugin's own directory browser (path field, one level of child directories, optional new folder) |
+| Add directory | Uses the host's native picker, then its OS dialog on failure; a `browse` capability opens the client browser directly (path field, one level of child directories, optional new folder) |
+| Open in file manager | Opens the host's file manager (Explorer / Finder) at a configured directory |
 | Remove / refresh | Applies immediately |
 | Switch session | The panel auto-switches to that session's directories |
 | Reopen panel | Uses the per-session cache — no redundant command rows |
@@ -98,8 +99,8 @@ When a shell run ends in such a denial and references a configured secondary dir
 - **Prompt injection** — one ordered `systemPrompt` section with a text provider evaluated per assembly, rendering only for sessions whose workspace has configured directories.
 - **Notifications** — a pending notice armed by the command handler (only on actual change) is consumed at the next boundary by either the `agent/pre-step` waterfall (prepend into the entering message batch) or the `tools/post-execute` waterfall (attach as `additionalContexts`), whichever fires first — the framework's native plugin-sourced `notice` context.
 - **Configuration & security boundary** — per-workspace config lives in a host-owned store outside every agent sandbox root (`<DSH_HOME>/storages/multi-folder/<workspace-key>.json`). Direct `write`/`edit` attempts against the config file are rejected with an explicit message — **the agent can never self-grant directories; configuration is user-managed by design**. See [SECURITY.md](SECURITY.md).
-- **Sessionless remote API** — a `multiFolder` namespace registered through `ctx.typert.register` (hand-written `src-json` descriptors) plus a plain-object service provided as `multiFolder`. Its `list`/`add`/`remove`/`set` methods are keyed by workspace **path** and share one validated core with the `/multi-folder` command, so the creation page can configure directories before any session exists. `browse`/`makeDir` ride the same namespace: they serve the plugin's own directory browser and never touch the configuration store.
-- **Owned directory browser** — "Add directory" is drawn by this plugin and served by `browse`/`makeDir`, so it behaves identically in every deployment: the host's native chooser composition, the browse composition (LAN or remote clients, desktop shells) and shells that compose no picker at all. Listing rides the host `fs` seam (`fs.resolve` + `fs.listDir`).
+- **Sessionless remote API** — a `multiFolder` namespace registered through `ctx.typert.register` (hand-written `src-json` descriptors) plus a plain-object service provided as `multiFolder`. Its `list`/`add`/`remove`/`set` methods are keyed by workspace **path** and share one validated core with the `/multi-folder` command, so the creation page can configure directories before any session exists. `browse`/`makeDir` serve the plugin's directory browser; `pick`/`reveal` select or open a host directory.
+- **Directory picking** — `multiFolder/pick` uses the host's `native` picker, then the OS dialog if it fails. A `browse` capability opens the client browser directly. Closing the panel cancels the request; cancelling a dialog adds nothing. The Windows helper is `lib/native-picker.ps1`.
 - **`@` discovery** — a second reader of that same `fs` seam: `multiFolder/listFiles` indexes the configured directories (breadth-first, canonical-path deduplicated so a junction cannot re-enter the walk, generated/vendor basenames excluded, capped and cached per workspace with a short TTL) and the client half registers a companion `@` source over it. The shipped single-root provider is not modified, and the shipped files/sessions group is not disturbed: the trigger registry keys sources by `(trigger, name)` and renders one group each.
 - **Client** — a hand-maintained factory bundle (`window.__ModuleLoader__.load`), no build toolchain required. The panel drives the host through two channels: the Remote BFF (`ctx.remote.commands.execute`) for sessions, and the shared `/api` RPC channel (`ctx.connection.rpc.call`) for the sessionless endpoints.
 
@@ -108,8 +109,9 @@ When a shell run ends in such a denial and references a configured secondary dir
 | Path | Purpose |
 | ---- | ------- |
 | `cordis.patch.yml` | Profile patch layer inserting the `dsh-multi-folder` row |
-| `lib/index.js` | Host plugin: config store, tool-pipeline interception, prompt injection, dual-channel notifications, `/multi-folder` command, sessionless `multiFolder/*` remote API (configuration, the owned browser's `browse`/`makeDir`, and `listFiles` for the `@` menu) |
-| `lib/client.js` | Client plugin (factory bundle): session-header button + overlay panel + session-creation page entry (input-dock chip / upstream hero chip / fixed fallback launcher) + the owned directory browser behind "Add directory" + the companion `@` source |
+| `lib/index.js` | Host plugin: configuration, tool interception, remote API, directory picker and file manager |
+| `lib/client.js` | Client panel, directory browser and companion `@` source |
+| `lib/native-picker.ps1` | Windows folder-dialog helper |
 | `test/` | Runtime-free behavior tests (see Development) |
 | `docs/` | Design and analysis documents |
 

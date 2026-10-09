@@ -401,7 +401,10 @@ element.props.onClick(); // toggles closed again
 assert(renderDeep(panel.component(withT({}))) === null, 'panel toggled closed');
 assert(calls.length === 1, 'reopen from cache issues no list command');
 
-// Add-directory flow: the plugin's OWN browser (browse -> choose -> add command)
+// Add-directory flow, FALLBACK: the mock refuses the endpoints it does not know
+// (see `connection.rpc.call`), so `multiFolder/pick` fails here exactly as it
+// does against a host without it — and "Add directory" must still be served by
+// the plugin's own browser (browse -> choose -> add command).
 element.props.onClick();
 await tick();
 let panelAfter = renderDeep(panel.component(withT({})));
@@ -431,6 +434,7 @@ assert(rpcCalls[rpcCalls.length - 1].channel === '/api', 'browse rides the share
 assert(rpcCalls[rpcCalls.length - 1].args.path === 'C:\\workspaces\\primary', 'browse starts at the panel workspace');
 let browsePanel = renderDeep(panel.component(withT({})));
 assert(JSON.stringify(browsePanel).includes('选择目录'), 'browser body replaces the list');
+assert(JSON.stringify(browsePanel).includes('系统目录选择器调用失败'), 'a failed picker explains itself in the browser body');
 assert(JSON.stringify(browsePanel).includes('secondary'), 'browser lists the child directory');
 assert(JSON.stringify(browsePanel).includes('.config'), 'browser lists hidden entries too');
 buttons.length = 0;
@@ -443,6 +447,60 @@ assert(calls.length > before, 'add command fired after choosing a level');
 assert(calls[calls.length - 1].line.includes('add'), 'add line shape');
 assert(calls[calls.length - 1].line.includes('C:\\workspaces\\primary'), 'add carries the chosen level path');
 assert(!JSON.stringify(renderDeep(panel.component(withT({})))).includes('选择此目录'), 'browser closes after a successful add');
+
+// Add-directory flow, PRIMARY: with the host answering `multiFolder/pick`, the
+// owned browser must stay closed and the picked directory must commit through
+// the same channel a browser choice uses.
+const rpcCall = ctx.connection.rpc.call;
+ctx.connection.rpc.call = async (channel, endpoint, payload) => {
+  if (endpoint === 'multiFolder/pick') {
+    rpcCalls.push({ channel, endpoint, args: payload.args });
+    return { ok: true, value: { path: 'C:\\picked\\by\\system', via: 'os-dialog' } };
+  }
+  return rpcCall(channel, endpoint, payload);
+};
+buttons.length = 0;
+walk(renderDeep(panel.component(withT({}))));
+const systemAdd = buttons.find((b) => JSON.stringify(b.children || []).includes('添加目录'));
+assert(systemAdd, 'add button present');
+const rpcBeforePick = rpcCalls.length;
+const callsBeforePick = calls.length;
+systemAdd.props.onClick();
+await new Promise((r) => setTimeout(r, 20));
+const pickCalls = rpcCalls.slice(rpcBeforePick);
+assert(pickCalls.some((c) => c.endpoint === 'multiFolder/pick'), 'the system picker is asked');
+// The start directory follows the panel: the canned add result above reports the
+// workspace as `W`, and the panel adopts it — so that is what the pick carries.
+assert(pickCalls.find((c) => c.endpoint === 'multiFolder/pick').args.cwd === 'W', 'the pick carries the panel workspace');
+assert(!pickCalls.some((c) => c.endpoint === 'multiFolder/browse'), 'the owned browser stays closed when the system answers');
+assert(calls.length > callsBeforePick && calls[calls.length - 1].line.includes('C:\\picked\\by\\system'), 'the picked directory is committed');
+ctx.connection.rpc.call = rpcCall;
+
+let finishPendingPick;
+let pendingSignal;
+ctx.connection.rpc.call = (channel, endpoint, payload, signal) => {
+  if (endpoint === 'multiFolder/pick') {
+    pendingSignal = signal;
+    return new Promise((resolve) => { finishPendingPick = resolve; });
+  }
+  return rpcCall(channel, endpoint, payload, signal);
+};
+buttons.length = 0;
+walk(renderDeep(panel.component(withT({}))));
+buttons.find((button) => JSON.stringify(button.children || []).includes('添加目录')).props.onClick();
+assert(pendingSignal && !pendingSignal.aborted, 'pending pick carries a live cancellation signal');
+const waitingPanel = renderDeep(panel.component(withT({})));
+assert(JSON.stringify(waitingPanel).includes('等待系统对话框'), 'panel reports the pending pick');
+waitingPanel.children[0].children[1].props.onClick();
+assert(pendingSignal.aborted, 'closing the panel cancels its picker request');
+element.props.onClick();
+const reopenedPanel = renderDeep(panel.component(withT({})));
+assert(!JSON.stringify(reopenedPanel).includes('等待系统对话框'), 'reopened panel is not waiting');
+const callsBeforeStaleAnswer = calls.length;
+finishPendingPick({ ok: true, value: { path: 'C:\\stale', via: 'os-dialog' } });
+await tick();
+assert(calls.length === callsBeforeStaleAnswer, 'a cancelled picker answer cannot commit a stale path');
+ctx.connection.rpc.call = rpcCall;
 
 // ---- Locale support: copy and labels follow the active locale ------------
 locale.setLocale('en');

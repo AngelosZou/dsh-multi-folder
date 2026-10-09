@@ -2,6 +2,19 @@
 
 All notable changes to this project are documented in this file.
 
+## [Unreleased]
+
+### Added
+
+- `multiFolder/pick` and `multiFolder/reveal` endpoints, with a Windows dialog
+  helper and an "open in file manager" action.
+
+### Changed
+
+- "Add directory" uses the native picker, then the host OS dialog on failure;
+  a `browse` composition opens the client browser. Closing the panel cancels
+  the request, and dialog failures remain distinct from user cancellation.
+
 ## [0.3.2] — 2026-09-29
 
 ### Added
