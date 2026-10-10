@@ -407,13 +407,28 @@ await interrupted.then(
   () => {},
 );
 
-// The shipped Windows chooser worker has been observed to exit mid-call: that
-// failure must be swallowed and the next attempt made, never propagated.
+// The shipped Windows chooser worker has been observed to exit mid-call: the OS
+// dialog is the second attempt, and a platform with no OS dialog to offer must
+// REPORT that failure instead of answering `unavailable` as if the host had
+// composed no picker at all.
 mockCtx.get = (n) => (n === 'directoryPicker'
   ? { capability: () => ({ kind: 'native', pick: async () => { throw new Error('directory picker failed: worker exited'); } }) }
   : undefined);
-const afterCrash = await asUnsupportedPlatform(() => api.pick(ws));
-assert(afterCrash.via === 'unavailable' && afterCrash.path === null, 'a crashing native picker degrades instead of throwing');
+await asUnsupportedPlatform(() => api.pick(ws)).then(
+  () => { throw new Error('FAIL: a crashed native picker with no OS dialog must be reported'); },
+  (e) => {
+    assert(
+      /host directory picker failed[\s\S]*worker exited/.test(String(e.message)),
+      'native picker failure is reported: ' + String(e.message),
+    );
+  },
+);
+
+// A capability that cannot even be read is not proven native: the host must not
+// be shown an OS dialog for it, so the client keeps its own browser.
+mockCtx.get = (n) => (n === 'directoryPicker' ? { capability: () => { throw new Error('capability unavailable'); } } : undefined);
+const unreadable = await api.pick();
+assert(unreadable.via === 'unavailable' && unreadable.path === null, 'an unreadable capability is never asked');
 
 // A browse-only composition must send the client to its browser, without
 // opening the host machine's OS dialog.

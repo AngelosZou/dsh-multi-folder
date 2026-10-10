@@ -347,10 +347,11 @@ window.__ModuleLoader__.load({
   a level still commits through the mode's own channel (`/multi-folder add` in a
   session, `multiFolder/add` on the creation page).
 - On Windows, `lib/native-picker.ps1` uses `IFileOpenDialog` on an STA thread,
-  sets per-monitor DPI awareness, and closes an unanswered dialog on a deadline.
-  It exits 0 for a selection or dismissal and nonzero when `Show()` fails.
-  `multiFolder/reveal` checks `fs.stat` before opening an existing directory
-  with the host file manager.
+  sets per-monitor DPI awareness (a build without that thread API still shows the
+  dialog), assists it to the foreground for a few seconds, and closes an
+  unanswered dialog on a deadline. It exits 0 for a selection or dismissal and
+  nonzero when `Show()` fails. `multiFolder/reveal` checks `fs.stat` before
+  opening an existing directory with the host file manager.
 - `@` source: registered through `ctx.inject(['inputTriggers'], …)` (see the
   `@` discovery section for the full decision table). It resolves the addressed
   session's workspace from the `sessions` snapshot (`byId[sessionId].cwd`), calls

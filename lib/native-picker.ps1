@@ -155,17 +155,28 @@ public static class DshFolderPicker
         Exception failure = null;
         Thread thread = new Thread(delegate()
         {
-            // Render at the monitor's REAL DPI. The PowerShell host is
-            // DPI-UNAWARE, so an untouched dialog is drawn at 96 DPI and then
-            // BITMAP-STRETCHED by Windows to the display scaling (150% on the
-            // machine this was written on) — which is exactly the soft, fuzzy
-            // text users notice. Thread-level awareness is the fix that always
-            // applies: a process manifest may already have fixed the PROCESS
-            // context (SetProcessDpiAwarenessContext would then be refused), but
-            // a thread context may be set at any time, and the dialog is created
-            // on this thread.
-            IntPtr previous = SetThreadDpiAwarenessContext(PER_MONITOR_AWARE_V2);
-            if (previous == IntPtr.Zero) previous = SetThreadDpiAwarenessContext(PER_MONITOR_AWARE);
+            IntPtr previous = IntPtr.Zero;
+            try
+            {
+                // Render at the monitor's REAL DPI. The PowerShell host is
+                // DPI-UNAWARE, so an untouched dialog is drawn at 96 DPI and then
+                // BITMAP-STRETCHED by Windows to the display scaling (150% on the
+                // machine this was written on) — which is exactly the soft, fuzzy
+                // text users notice. Thread-level awareness is the fix that always
+                // applies: a process manifest may already have fixed the PROCESS
+                // context (SetProcessDpiAwarenessContext would then be refused), but
+                // a thread context may be set at any time, and the dialog is created
+                // on this thread.
+                previous = SetThreadDpiAwarenessContext(PER_MONITOR_AWARE_V2);
+                if (previous == IntPtr.Zero) previous = SetThreadDpiAwarenessContext(PER_MONITOR_AWARE);
+            }
+            catch
+            {
+                // A Windows build without the thread-scoped DPI API still shows the
+                // dialog, only bitmap-stretched at the process DPI — not worth
+                // failing the pick over, and an exception here would have escaped
+                // this thread and killed the helper outright.
+            }
             try { result = Show(initial, timeoutMs); }
             catch (Exception error) { failure = error; }
             finally
@@ -178,7 +189,7 @@ public static class DshFolderPicker
         thread.Start();
         bool finished = timeoutMs > 0
             ? thread.Join(timeoutMs + 5000)
-            : (thread.Join(Timeout.Infinite) || true);
+            : thread.Join(Timeout.Infinite);
         if (failure != null) throw failure;
         return finished ? result : null;
     }
@@ -215,13 +226,19 @@ public static class DshFolderPicker
         // delegate is created, so the single-statement form does not compile.
         Timer watchdog = null;
         DateTime deadline = timeoutMs > 0 ? DateTime.UtcNow.AddMilliseconds(timeoutMs) : DateTime.MinValue;
-        int remaining = 240;
+        // The foreground assist is BOUNDED: it exists to bring a fresh dialog in
+        // front of a user whose host process is in the background, not to fight
+        // that user for the foreground for the dialog's whole life. Roughly three
+        // seconds of nudges, after which this timer only watches the deadline.
+        int assistTicks = 12;
+        int windowWaits = 240;
         watchdog = new Timer(delegate(object state)
         {
             IntPtr window = FindOwnDialog();
             if (window == IntPtr.Zero)
             {
-                if (--remaining <= 0 && watchdog != null) watchdog.Dispose();
+                // A dialog that never appears leaves nothing to watch.
+                if (--windowWaits <= 0 && watchdog != null) watchdog.Dispose();
                 return;
             }
             if (deadline != DateTime.MinValue && DateTime.UtcNow >= deadline)
@@ -230,8 +247,12 @@ public static class DshFolderPicker
                 if (watchdog != null) watchdog.Dispose();
                 return;
             }
-            SetForegroundWindow(window);
-            BringWindowToTop(window);
+            if (assistTicks > 0)
+            {
+                SetForegroundWindow(window);
+                BringWindowToTop(window);
+                assistTicks--;
+            }
         }, null, 250, 250);
         int hr;
         try { hr = dialog.Show(IntPtr.Zero); }

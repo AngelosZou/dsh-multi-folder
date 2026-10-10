@@ -32,6 +32,27 @@ granted the session. The design enforces four boundaries:
    bypasses confinement (as it already does for the primary workspace, by the user's
    explicit choice).
 
+### Host-side UI actions (`pick` / `reveal`)
+
+Two sessionless endpoints ask the **host machine** to show UI instead of reading or
+writing a path:
+
+- `multiFolder/pick` asks the host's composed directory picker first, and only a
+  `native` composition (a loopback, attended, non-SSH host — the framework's own
+  `directory-picker-auto` decision) may fall back to this plugin's own OS dialog:
+  `lib/native-picker.ps1` on Windows, `osascript` on macOS. A `browse` composition
+  never reaches a dialog — the client is sent to the browser this plugin draws.
+- `multiFolder/reveal` opens one **existing directory** in the host file manager
+  (`explorer.exe` / `open` / `xdg-open`). It refuses anything that is not an existing
+  directory, so a stale entry cannot launch a file.
+
+Both ride the same trusted browser→host RPC channel as every other `multiFolder/*`
+endpoint (the `connection` Host/Origin fence plus browser authentication) and are
+never exposed as agent tools. They act on the host by design — the host owns the
+filesystem the session is configured against — which is exactly why a remote client
+must never be routed to them: the UI would appear on a display nobody clicked from.
+The `native`-only gate above is what enforces that.
+
 ### What is deliberately out of scope
 
 - In a `danger-full-access` session the agent can already touch the whole filesystem;
@@ -39,22 +60,3 @@ granted the session. The design enforces four boundaries:
 - The agent can *read* the configuration file (reads are not policy-fenced in the DSH
   filesystem backend). Reading reveals nothing the system prompt does not already list
   for that session.
-
-## Reporting a vulnerability
-
-If you believe you have found a security issue in this plugin, please report it
-privately by opening a GitHub Security Advisory on the repository instead of a public
-issue. Please include:
-
-- the affected version,
-- a minimal reproduction,
-- the expected vs. observed behavior.
-
-We will acknowledge the report within 7 days and aim to publish a fix (or a
-documented mitigation) before public disclosure.
-
-## Supported versions
-
-| Version | Supported |
-| ------- | --------- |
-| 0.1.x   | ✅        |
