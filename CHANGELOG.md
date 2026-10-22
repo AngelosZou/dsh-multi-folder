@@ -2,6 +2,13 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.3.4] — 2026-10-23
+
+### Fixed
+
+- Secondary-directory pwsh/bash calls now pass schema validation.
+- Ancestor roots no longer capture primary-targeted calls.
+
 ## [0.3.3] — 2026-10-10
 
 ### Added

@@ -424,6 +424,20 @@ assert(shellRuns[0].sandboxPolicy.workspaceRoot === SEC, 'shell policy re-rooted
 assert(shellRuns[0].workdir === SEC, 'shell workdir');
 assert(shellRuns[0].dshEnv && shellRuns[0].dshEnv.DSH_TEST === '1', 'dshEnv collected');
 assert(pwshOut.value.kind === 'foreground' && pwshOut.value.exitCode === 0, 'pwsh value shape');
+// Contract check against the shipped pwsh `output.schema` (0.2.1-rc.2): the
+// foreground branch requires `cwd` and a NUMERIC `timeoutMs`. Omitting `cwd`
+// made the kernel reject the value with INVALID_TOOL_OUTPUT — *after* the
+// command had already run — so the shape is asserted field by field here.
+assert(pwshOut.value.cwd === SEC, 'pwsh value carries the canonical cwd: ' + pwshOut.value.cwd);
+assert(typeof pwshOut.value.timeoutMs === 'number', 'pwsh value timeoutMs is a number');
+assert(pwshOut.value.signal === null && pwshOut.value.timedOut === false, 'pwsh value signal/timedOut');
+assert(pwshOut.value.aborted === false, 'pwsh value aborted false');
+assert(pwshOut.value.stdout && pwshOut.value.stdout.text === 'ok\r\n'
+  && pwshOut.value.stdout.truncated === false, 'pwsh value stdout shape');
+assert(pwshOut.value.stderr && pwshOut.value.stderr.text === ''
+  && pwshOut.value.stderr.truncated === false, 'pwsh value stderr shape');
+assert(pwshOut.value.sandbox && pwshOut.value.sandbox.mode === 'workspace-write'
+  && pwshOut.value.sandbox.denied === false, 'pwsh value sandbox facts');
 assert(pwshOut.content[0].text.includes('ok'), 'pwsh content stdout');
 
 // 10. pwsh with primary workdir -> passthrough.
@@ -456,6 +470,8 @@ assert(shellStarts[0].request.dshEnv && shellStarts[0].request.dshEnv.DSH_TEST =
 assert(jobStarts.length === 1 && jobStarts[0].kind === 'pwsh' && jobStarts[0].label === 'echo bg', 'job identity');
 assert(jobStarts[0].owner === agent, 'job owner is the calling agent');
 assert(bgPwsh.value.kind === 'background' && bgPwsh.value.jobId === 'pwsh-1', 'background value shape');
+// The background branch of the shipped schema also requires `cwd`.
+assert(bgPwsh.value.cwd === SEC, 'background value carries cwd: ' + bgPwsh.value.cwd);
 assert(bgPwsh.content[0].text === 'started background job pwsh-1', 'background content text');
 
 // hooks: terminal outcome + clean streamed read.
@@ -966,5 +982,74 @@ const fgBoth = await execBoth(
 );
 assert(fgBoth !== 'PASSTHROUGH' && fgBoth.isError === false, 'dual-seam foreground intercepted');
 assert(shellExecutes.length === 1 && shellRuns.length === runsBeforeBoth, 'dual-seam prefers execute() over the retired run()');
+
+// 19. A secondary directory configured at an ANCESTOR of the primary workspace
+//     must not capture primary-targeted calls: the default pipeline already
+//     serves those with the exact standing root, while interception would
+//     re-root the policy at the ancestor (a broader write grant than the call
+//     needs). A target AT the secondary root stays intercepted.
+const WS_ANC = SEC + '\\child';
+const agentAnc = { session: { id: 'sAnc', header: { cwd: WS_ANC } } };
+const listenersAnc = new Map();
+const ctxAnc = makeCtx(listenersAnc, {
+  sandboxPolicy: {
+    resolve(request) {
+      const sid = request && request.session ? String(request.session.id) : undefined;
+      return { mode: 'workspace-write', workspaceRoot: WS_ANC, ...(sid ? { sessionId: sid } : {}) };
+    },
+  },
+});
+apply(ctxAnc);
+const commandHandlerAnc = commandDef && commandDef.handler;
+assert(commandHandlerAnc, 'ancestor command registered');
+const setAnc = await commandHandlerAnc({
+  commandId: 'canc1',
+  agent: agentAnc,
+  rawInput: 'set "' + SEC + '"',
+  signal: undefined,
+});
+assert(setAnc.kind === 'success', 'ancestor config set succeeds: ' + JSON.stringify(setAnc));
+const execAnc = listenersAnc.get('tools/execute')[0];
+
+const ancDefault = await execAnc(
+  { name: 'pwsh', arguments: { command: 'echo x' }, agent: agentAnc, signal: undefined },
+  nextPassthrough,
+);
+assert(
+  ancDefault === 'PASSTHROUGH',
+  'default workdir inside the primary passes through even when a secondary dir is its ancestor',
+);
+
+const ancExplicit = await execAnc(
+  { name: 'pwsh', arguments: { command: 'echo x', workdir: WS_ANC }, agent: agentAnc, signal: undefined },
+  nextPassthrough,
+);
+assert(ancExplicit === 'PASSTHROUGH', 'explicit primary workdir passes through under an ancestor secondary dir');
+
+const ancRoot = await execAnc(
+  { name: 'pwsh', arguments: { command: 'echo x', workdir: SEC }, agent: agentAnc, signal: undefined },
+  nextPassthrough,
+);
+assert(ancRoot !== 'PASSTHROUGH' && ancRoot.isError === false, 'workdir at the secondary root stays intercepted');
+assert(
+  shellRuns[shellRuns.length - 1].sandboxPolicy.workspaceRoot === SEC,
+  'ancestor shell policy re-rooted to the secondary dir',
+);
+
+const ancWritePrimary = await execAnc(
+  { name: 'write', arguments: { file_path: WS_ANC + '\\a.txt', content: 'x' }, agent: agentAnc, signal: undefined },
+  nextPassthrough,
+);
+assert(ancWritePrimary === 'PASSTHROUGH', 'write inside the primary passes through under an ancestor secondary dir');
+
+const ancWriteSecondary = await execAnc(
+  { name: 'write', arguments: { file_path: SEC + '\\b.txt', content: 'x' }, agent: agentAnc, signal: undefined },
+  nextPassthrough,
+);
+assert(
+  ancWriteSecondary !== 'PASSTHROUGH' && ancWriteSecondary.isError === false,
+  'write at the secondary root stays intercepted',
+);
+assert(writes[writes.length - 1].policy.workspaceRoot === SEC, 'ancestor write policy re-rooted to the secondary dir');
 
 console.log('intercept: all assertions passed');

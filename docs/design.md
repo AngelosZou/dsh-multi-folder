@@ -73,9 +73,12 @@ A listener on the `tools/execute` around-dispatch waterfall handles `write`, `ed
      *is* the `ShellProcess` the background path already consumed, so the jobs
      adaptation itself needed no change.
    The result carries the same canonical value/content shapes as the shipped tools, so
-   downstream presentation keeps working.
-5. Anything else — unknown tools, paths outside every secondary directory, missing
-   optional services (`shell`, `jobs`), or a failure **before** the target is
+   downstream presentation keeps working. The kernel validates that value against the
+   owning tool's `output.schema` after the command has run, so every required field
+   must be present.
+5. Anything else — unknown tools, paths outside every secondary directory, a target or
+   workdir inside the primary workspace missing
+   optional services (`shell`, `jobs`), or a failure before the target is
    resolved into a secondary directory (path resolution, config lookup, service
    lookup) — falls through to `next()` and the default pipeline. An explicit
    escalation request (`sandbox_permissions` carrying a non-empty mode string) also
