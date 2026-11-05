@@ -65,7 +65,7 @@ let workspaces = [
   { id: 'w1', path: '/proj/a', title: 'Project A', sessionIds: ['s1', 's2'] },
   { id: 'w2', path: '/proj/b', title: 'Project B', sessionIds: ['s3'] },
 ];
-const registry = { list: () => workspaces };
+const registry = { list: () => workspaces, get: (id) => workspaces.find((w) => w.id === id) };
 const { sections, listeners, provided } = makeCtx(registry);
 const api = provided.get('multiFolder');
 assert(api !== undefined, 'multiFolder service provided');
@@ -94,6 +94,15 @@ const afterRename = sections[0].text({ agent: agentOf('s1', '/proj/a') });
 assert(afterRename.includes('/repos/one'), 'title rename keeps the configuration');
 const listed = await api.list('/proj/a', 'w1');
 assert(listed.dirs[0] === '/repos/one', 'list through the identity still sees the dir');
+const idOnly = await api.list(undefined, 'w1');
+assert(idOnly.dirs[0] === '/repos/one', 'an identity-only read resolves without a path');
+
+// Deleting the workspace registration must not leave its orphaned list active:
+// the session falls back to the path scope (here: no legacy file).
+workspaces = workspaces.filter((w) => w.id !== 'w1');
+const afterDelete = sections[0].text({ agent: agentOf('s1', '/proj/a') });
+assert(!afterDelete.includes('/repos/one'), 'a deleted workspace stops granting its old list');
+workspaces = [...workspaces, { id: 'w1', path: '/proj/a', title: 'Project A', sessionIds: ['s1', 's2'] }];
 
 // Legacy migration: an old path-keyed file is copied into the identity store.
 files.set(legacyFile('/proj/b'), JSON.stringify(['/repos/two'], null, 2) + '\n');
