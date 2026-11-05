@@ -106,28 +106,49 @@ at apply time can yield `undefined` when the provider row activates later. There
 
 ## Host: configuration store
 
-- Canonical location: `<DSH_HOME>/storages/multi-folder/<workspace-key>.json`
+- Canonical location: `<DSH_HOME>/storages/multi-folder/workspaces/<workspaceId>.json`
   (`DSH_HOME` falls back to `~/.dsh`), i.e. **outside every agent sandbox root**.
+  The file is JSON: `{ version, workspaceId, path, dirs, updatedAt }`.
+- The key is the durable **WorkspaceId**, not a path: a workspace title rename
+  leaves it unchanged, and a session reaching the same project through a
+  symlinked/junctioned ancestor resolves to the same record. The legacy
+  path-keyed file (`<workspace-key>.json`, a bare JSON array) is still read and
+  is **copied** into the identity store on first read; the legacy file stays in
+  place so a headless profile without a workspace registry keeps its old
+  behavior.
+- Scope resolution is synchronous: the plugin scans
+  `ctx.get('workspaceRegistry').list()` for the owning workspace's `sessionIds`.
+  The registry is an optional dependency — when it is absent (headless, ACP), or
+  the session is not attached to one, the scope falls back to the session
+  header's `cwd` and the legacy path-keyed file.
 - Writes happen only from user-initiated flows (the `/multi-folder` command
   handler and the `multiFolder/*` remote endpoints) with an explicit
   `workspace-write` policy rooted at the config directory.
-- A per-process cache keyed by normalized workspace path hydrates lazily (on
-  `agent/created`, `agent/pre-step`, and `tools/execute`). On the interception
-  path hydration is **awaited**, not fire-and-forget: a first call that landed
-  before the config read resolved would otherwise see an empty cache, fall
-  through to the default pipeline, and be fenced against the PRIMARY workspace
-  root — a spurious `[sandbox: file access denied under workspace-write mode]`
-  for a secondary-directory mutation. `loadDirs` caches, so only the first call
-  pays the read. Because `sandbox-policy` realpath-canonicalizes the policy
-  workspace root while hydration is keyed by the session cwd **as spelled in
-  the header**, a workspace reached through a symlinked/junctioned ancestor can
-  spell the two differently; the interception consults BOTH keys (and the
-  config guard checks both config-path spellings) before falling through.
+- A per-process cache keyed by `id:<workspaceId>` or `path:<normalized-path>`
+  hydrates lazily (on `agent/created`, `agent/pre-step`, and `tools/execute`).
+  On the interception path hydration is **awaited**, not fire-and-forget: a
+  first call that landed before the config read resolved would otherwise see an
+  empty cache, fall through to the default pipeline, and be fenced against the
+  PRIMARY workspace root — a spurious
+  `[sandbox: file access denied under workspace-write mode]` for a
+  secondary-directory mutation. `loadDirs` caches, so only the first call pays
+  the read. A legacy path scope still consults the policy root as well, because
+  `sandbox-policy` realpath-canonicalizes the policy workspace root while the
+  header may spell it differently.
+- The config guard rejects any write/edit whose target resolves **inside** the
+  whole `storages/multi-folder/` tree, covering both the identity files and the
+  legacy path-keyed files; `sanitizeDirs` likewise refuses to add the store
+  itself as a secondary directory.
 - One shared **core** (`coreList` / `coreAdd` / `coreRemove` / `coreSet`)
   implements validation, canonicalization, sanitization, cache write-through,
   and persistence. The command channel and the remote channel both call it, so
   the security surface stays identical on both. Core errors carry bare
   messages; each channel adds its own `multi-folder: ` prefix.
+
+Change notifications fan out to every **live** agent in the same scope
+(`ctx.get('agents').list()`), not only the session that made the change, because
+the directory set is shared by the whole workspace. When the agents service is
+absent, the invoking agent is still notified.
 
 ## Host: sessionless remote API
 

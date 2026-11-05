@@ -166,15 +166,15 @@ for (const descriptor of contribution.invocations) {
   }
 }
 const listParams = contribution.invocations.find((d) => d.method === 'list').parameters.map((p) => p.wire);
-assert(listParams.join(',') === 'workspace', 'list wire shape');
+assert(listParams.join(',') === 'workspace,workspaceId', 'list wire shape');
 const setParams = contribution.invocations.find((d) => d.method === 'set').parameters.map((p) => p.wire);
-assert(setParams.join(',') === 'workspace,dirs', 'set wire shape');
+assert(setParams.join(',') === 'workspace,dirs,workspaceId', 'set wire shape');
 const browseParams = contribution.invocations.find((d) => d.method === 'browse').parameters.map((p) => p.wire);
 assert(browseParams.join(',') === 'path', 'browse wire shape');
 const makeDirParams = contribution.invocations.find((d) => d.method === 'makeDir').parameters.map((p) => p.wire);
 assert(makeDirParams.join(',') === 'parent,name', 'makeDir wire shape');
 const listFilesParams = contribution.invocations.find((d) => d.method === 'listFiles').parameters.map((p) => p.wire);
-assert(listFilesParams.join(',') === 'workspace,query', 'listFiles wire shape');
+assert(listFilesParams.join(',') === 'workspace,query,workspaceId', 'listFiles wire shape');
 const pickParams = contribution.invocations.find((d) => d.method === 'pick').parameters.map((p) => p.wire);
 assert(pickParams.join(',') === 'cwd', 'pick wire shape');
 assert(contribution.invocations.find((d) => d.method === 'pick').cancellation?.parameter === 'signal', 'pick receives transport cancellation');

@@ -7,19 +7,20 @@
 granted the session. The design enforces four boundaries:
 
 1. **User-only configuration.** Secondary directories can only be added or removed by
-   the user, through the session-header panel, the session-creation page panel, or
-   the `/multi-folder` slash command. The two panels are backed by a sessionless
+   the user, through the multi-folder conversation view, the session-creation page
+   panel, or the `/multi-folder` slash command. The two panels are backed by a sessionless
    `multiFolder/*` remote API on the trusted browser→host RPC channel — endpoints
    that exist only for the web UI and are never exposed as agent tools. The agent
    has no tool, command, or file path through which it can change the configuration.
 
 2. **Host-owned configuration store.** Per-workspace configuration lives in
-   `<DSH_HOME>/storages/multi-folder/<workspace-key>.json` — outside every agent
-   sandbox root. The agent's own tools cannot read-write there under `read-only` or
+   `<DSH_HOME>/storages/multi-folder/workspaces/<workspaceId>.json` — outside
+   every agent sandbox root. The legacy path-keyed file is read for migration
+   but is no longer the canonical record. The agent's own tools cannot read-write there under `read-only` or
    `workspace-write` (the sandbox fences the write path by the workspace root).
 
-3. **Explicit write guard.** `write` / `edit` calls targeting the configuration
-   file are short-circuited by the tool-pipeline interception with an explicit
+3. **Explicit write guard.** `write` / `edit` calls targeting anything inside the
+   `storages/multi-folder/` store are short-circuited by the tool-pipeline interception with an explicit
    rejection message, independent of the session mode. This turns any attempt at
    self-escalation into a visible, explainable error instead of a silent no-op or a
    silent success.
