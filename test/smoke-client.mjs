@@ -92,7 +92,7 @@ const entryBy = (slotName, id) =>
 // re-fire when a declaration arrives later (the real service reconciles on the
 // declaration epoch). `shell.overlay` and the session header are always
 // declared by the shell; the conversation seats are declared by the test.
-const declared = new Set(['conversation.session.header.actions', 'conversation.view', 'shell.overlay']);
+const declared = new Set(['conversation.session.header.actions', 'shell.overlay']);
 const waits = new Map(); // slotName -> [{ callback, dispose }]
 
 const declareSlot = (slotName) => {
@@ -329,7 +329,6 @@ declareSlot('conversation.input.dock');
 moduleExport.apply(ctx);
 
 assert(entryBy('conversation.session.header.actions', 'multi-folder'), 'header action registered');
-assert(entryBy('conversation.view', 'multi-folder'), 'conversation view registered');
 assert(entryBy('shell.overlay', 'multi-folder'), 'overlay panel registered');
 assert(entryBy('shell.overlay', 'multi-folder-hero'), 'hero launcher registered');
 assert(entryBy('conversation.input.dock', 'multi-folder'), 'input-dock chip registered');
@@ -355,7 +354,6 @@ assert(
 );
 for (const [slotName, id] of [
   ['conversation.session.header.actions', 'multi-folder'],
-  ['conversation.view', 'multi-folder'],
   ['shell.overlay', 'multi-folder'],
   ['shell.overlay', 'multi-folder-hero'],
   ['conversation.input.dock', 'multi-folder'],
@@ -392,13 +390,6 @@ const panelElement = renderDeep(panel.component(withT({})));
 assert(panelElement !== null, 'panel open after click');
 const panelText = JSON.stringify(panelElement);
 assert(panelText.includes('secondary'), 'panel lists the secondary dir');
-
-// The Conversation View renders the same body as a full page and reuses the
-// session cache (no second list command).
-const viewEntry = entryBy('conversation.view', 'multi-folder');
-const viewEl = renderDeep(viewEntry.component(withT({ sessionId: 'session-x' })));
-assert(JSON.stringify(viewEl).includes('secondary'), 'view renders the shared list');
-assert(calls.length === 1, 'view reuses the cached list instead of re-querying');
 
 // Close + reopen -----------------------------------------------------------
 const closeButton = panelElement.children[0].children[1];
@@ -860,5 +851,20 @@ wsRefreshBtn.props.onClick();
 await tick();
 const wsErrPanel = renderDeep(panel.component(withT({})));
 assert(JSON.stringify(wsErrPanel).includes('rpc-boom'), 'workspace-mode RPC failure surfaced');
+
+// Declaring the Conversation View retires the header fallback and registers
+// the full-page management surface.
+declareSlot('conversation.view');
+assert(
+  entryBy('conversation.session.header.actions', 'multi-folder') === undefined,
+  'the header fallback retires once the view is declared',
+);
+const viewEntry = entryBy('conversation.view', 'multi-folder');
+assert(viewEntry, 'conversation view registered');
+renderDeep(viewEntry.component(withT({ sessionId: 'session-x' }))); // effect focuses the store
+const viewEl = renderDeep(viewEntry.component(withT({ sessionId: 'session-x' })));
+assert(JSON.stringify(viewEl).includes('secondary'), 'view renders the shared list');
+assert(JSON.stringify(viewEl).includes('workspace-level') || JSON.stringify(viewEl).includes('工作区级'), 'view labels the workspace scope');
+assert(JSON.stringify(viewEl).includes('本会话') || JSON.stringify(viewEl).includes('This session'), 'view labels the session scope');
 
 console.log('smoke-client: all assertions passed');
