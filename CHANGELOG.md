@@ -2,6 +2,29 @@
 
 All notable changes to this project are documented in this file.
 
+## [Unreleased]
+
+### Added
+
+- A Conversation View tab ("Multi-folder") beside Chat and Trajectory. The
+  session-header button remains as a compact shortcut.
+- Configuration is now keyed by the durable `WorkspaceId`
+  (`storages/multi-folder/workspaces/<workspaceId>.json`): a workspace rename
+  or a different path spelling no longer splits the list, and every session of
+  one workspace shares one record.
+- `multiFolder/*` endpoints accept an optional `workspaceId`.
+
+### Changed
+
+- Change notices fan out to every live session of the workspace, not only the
+  session that made the change.
+- The config write guard covers the whole `storages/multi-folder/` tree.
+
+### Migration
+
+- The legacy path-keyed file is still read and is copied into the identity
+  store on first read; the legacy file stays in place for headless profiles.
+
 ## [0.3.4] — 2026-10-23
 
 ### Fixed

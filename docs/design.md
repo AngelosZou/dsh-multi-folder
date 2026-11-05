@@ -15,7 +15,7 @@ agent informed. No new tools are added.
 | Half | File | Role |
 | ---- | ---- | ---- |
 | Host | `lib/index.js` | Config store, tool-pipeline interception, prompt section, notifications, `/multi-folder` command, sessionless `multiFolder/*` remote API (configuration, the browser's `browse`/`makeDir`, and the `@` menu's `listFiles`) |
-| Client | `lib/client.js` | Session-header button + overlay panel; session-creation page entry (input-dock chip, upstream hero chip, or fixed fallback launcher — one at a time), all driving the host through the Remote BFF / shared RPC channel; the owned directory browser behind "Add directory"; the companion `@` source |
+| Client | `lib/client.js` | Conversation View tab (the management surface) plus a compact session-header shortcut; session-creation page entry (input-dock chip, upstream hero chip, or fixed fallback launcher — one at a time), all driving the host through the Remote BFF / shared RPC channel; the owned directory browser behind "Add directory"; the companion `@` source |
 
 The package declares both faces: `dsh.bundle.patch` (the host row inserted by
 `cordis.patch.yml`) and `dsh.client` (the web bundle at `exports["./client"]`).
@@ -406,8 +406,8 @@ window.__ModuleLoader__.load({
     The row stays **in flow** — `display:flex` with the official hero
     row's 20px indent, no absolute positioning — so the framework's list-slot
     arrangement keeps it clear of every other plugin's dock row. It renders
-    only on the session-creation page; an active session keeps its entry in the
-    session header, so the two never appear together.
+    only on the session-creation page; an active session manages the list in
+    its Conversation View tab, so the two never appear together.
   - The **hero chip** registers into `conversation.hero.workspaceExtras` via
     `slots.inject`, which waits for the declaration: with an upstream DSH
     build that declares the slot, the chip renders inline beside the workspace
@@ -428,8 +428,9 @@ window.__ModuleLoader__.load({
   - Clicking any of them opens the panel in workspace mode; without a selected
     workspace the panel shows the "pick a workspace first" hint.
 - Panel placement: one `panelBody(store, t)` function returns the panel's
-  children, spread by whichever wrapper owns the panel — the fixed
-  `shell.overlay` panel (session-header path) or an `AnchoredPanel` popover
+  children, spread by whichever wrapper owns the panel — the Conversation View
+  page (`panelBody(store, t, { view: true })`, no close control), the fixed
+  `shell.overlay` panel (the header shortcut), or an `AnchoredPanel` popover
   rendered by the chip itself (opening upward from the dock row, downward from
   the hero row). `store.anchor` names the owner, and the overlay wrapper stands
   down whenever a chip owns it, so the panel never renders twice.
