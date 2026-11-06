@@ -52,6 +52,9 @@ class FakeNode {
   }
 
   querySelector(selector) {
+    if (selector === '[data-sb="sessionMenu"]') {
+      return this.find(child => child.getAttribute && child.getAttribute('data-sb') === 'sessionMenu')
+    }
     if (selector.includes('data-mf-workspace-action')) {
       return this.find(child => child.getAttribute && child.getAttribute('data-mf-workspace-action') !== null)
     }
@@ -80,7 +83,12 @@ const listSource = {
 }
 
 const listCalls = []
+const sessionCalls = []
 const localeDicts = new Map()
+localeDicts.set('homepage', {
+  zh: { 'sidebar.list.newProject': '添加项目', 'sidebar.list.addProject': '添加项目…' },
+  en: { 'sidebar.list.newProject': 'Add project', 'sidebar.list.addProject': 'Add a project…' },
+})
 localeDicts.set('workspace', {
   zh: { 'workspace.add': '添加工作区', 'menu.addWorkspace': '添加工作区…' },
   en: { 'workspace.add': 'Add workspace', 'menu.addWorkspace': 'Add workspace…' },
@@ -112,11 +120,14 @@ function makeRow(attrs, actionClass) {
 const officialRow = makeRow({ 'data-row-key': 'workspace:w1' }, 'rowActions_x')
 const homepageRow = makeRow({ 'data-sb': 'project', 'data-ws': 'w1' }, 'ph-sb-actions')
 const rows = [officialRow, homepageRow]
+const sessionRow = makeRow({ 'data-sb': 'session', 'data-id': 's1', 'data-ws': 'w1' }, 'ph-sb-actions')
+const sessionRows = [sessionRow]
 
 const document = {
   body: new FakeNode('body'),
   querySelector() { return null },
   querySelectorAll(selector) {
+    if (selector.includes('data-sb="session"')) return sessionRows
     return selector.includes('workspace:') || selector.includes('data-ws') ? rows : []
   },
   createElement(tag) { return new FakeNode(tag) },
@@ -153,7 +164,32 @@ const ctx = {
   },
   remote: {
     $host: { home: '/home' },
-    commands: { execute: async () => ({ ok: false, error: { message: 'unused' } }) },
+    commands: {
+      async execute(sessionId, line) {
+        sessionCalls.push({ sessionId, line })
+        return {
+          ok: true,
+          value: {
+            commandId: 's1',
+            result: {
+              kind: 'success',
+              text: 'Session overlay\n[MF:JSON] ' + JSON.stringify({
+                sessionId: 's1',
+                workspace: '/workspace/one',
+                workspaceId: 'w1',
+                mode: 'inherit',
+                baseDirs: [],
+                sessionDirs: [],
+                excludedDirs: [],
+                effectiveDirs: [],
+                dirs: [],
+                changed: false,
+              }),
+            },
+          },
+        }
+      },
+    },
   },
   connection: {
     rpc: {
@@ -214,6 +250,13 @@ assert(officialAction && officialAction.getAttribute('data-mf-workspace-action')
   'official workspace row receives a directory-settings button')
 assert(homepageAction && homepageAction.getAttribute('data-mf-workspace-action') === '',
   'homepage grouped workspace row receives the same entry')
+const sessionAction = sessionRow.children[0].children.at(-1)
+assert(sessionAction && sessionAction.getAttribute('data-mf-session-action') === '',
+  'homepage grouped session row receives a session settings entry')
+sessionAction.click()
+await new Promise(resolve => setTimeout(resolve, 20))
+assert(sessionCalls.some(call => call.sessionId === 's1' && call.line === '/multi-folder session list'),
+  'the homepage session entry opens the session overlay')
 assert(officialAction.getAttribute('aria-label') === '工作区目录设置（多工作目录）',
   'the row entry carries an accessible localized label')
 
@@ -222,5 +265,18 @@ officialAction.click()
 assert(listCalls.length > before, 'the workspace row entry opens the workspace panel')
 assert(listCalls.at(-1).workspace === '/workspace/one' && listCalls.at(-1).workspaceId === 'w1',
   'the row entry addresses the workspace by path and durable id')
+
+// The homepage grouped list has its own Add project control; it must arm the
+// same user-initiated creation flow.
+armClick({ target: {
+  nodeType: 1,
+  getAttribute(name) { return name === 'aria-label' ? '添加项目' : null },
+  textContent: '添加项目',
+  parentElement: null,
+} })
+listSnapshot.items = [...listSnapshot.items, { workspaceId: 'w3', path: '/workspace/three', title: 'Three' }]
+listSourceListeners.forEach(listener => listener())
+assert(listCalls.some(args => args.workspace === '/workspace/three' && args.workspaceId === 'w3'),
+  'the homepage Add project control arms the first-run panel')
 
 console.log('workspace-browser: all assertions passed')

@@ -14,10 +14,12 @@ granted the session. The design enforces four boundaries:
    has no tool, command, or file path through which it can change the configuration.
 
 2. **Host-owned configuration store.** Per-workspace configuration lives in
-   `<DSH_HOME>/storages/multi-folder/workspaces/<workspaceId>.json` — outside
-   every agent sandbox root. The legacy path-keyed file is read for migration
-   but is no longer the canonical record. The agent's own tools cannot read-write there under `read-only` or
-   `workspace-write` (the sandbox fences the write path by the workspace root).
+   `<DSH_HOME>/storages/multi-folder/workspaces/<workspaceId>.json`, and each
+   session overlay lives in `<DSH_HOME>/storages/multi-folder/sessions/<sessionId>.json`
+   — outside every agent sandbox root. The legacy path-keyed file is read for
+   migration but is no longer the canonical record. The agent's own tools cannot
+   read-write there under `read-only` or `workspace-write` (the sandbox fences
+   the write path by the workspace root).
 
 3. **Explicit write guard.** `write` / `edit` calls targeting anything inside the
    `storages/multi-folder/` store are short-circuited by the tool-pipeline interception with an explicit

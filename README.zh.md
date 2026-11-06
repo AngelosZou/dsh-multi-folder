@@ -46,14 +46,15 @@ dsh plugin --profile web add dsh-multi-folder
 
 ## 使用
 
-会话视图切换器中出现「多工作目录」标签页（与「对话」「轨迹」并列；英文界面显示 "Multi-folder"），会话头部保留一个紧凑按钮作为快捷入口；工作区浏览器中，鼠标悬停工作区行时会出现 `+` 设置入口，可直接打开紧凑的工作区级目录面板。通过官方流程新建工作区后，插件会立即提示一次，允许为这个新工作区附加更多目录。**会话创建页**的入口位于**输入框上方**——与 git 分支胶囊同一条 dock 带，左边缘对齐新会话界面的工作区/预设胶囊，点击后面板以锚定在该胶囊上的浮层展开。会话创建页始终只显示**一个**入口：插件注册三个候选座位并选用当前可用的最佳者（上游 `conversation.hero.workspaceExtras` chip > `conversation.input.dock` 行 > 两者皆未声明时的右下角浮动按钮）。打开面板即可：
+会话视图切换器中出现「多工作目录」标签页（与「对话」「轨迹」并列；英文界面显示 "Multi-folder"），会话头部保留一个紧凑按钮作为快捷入口；工作区浏览器中，鼠标悬停工作区行时会出现 `+` 设置入口，可直接打开紧凑的工作区级目录面板；悬停会话行时会出现 `⚙` 入口，用于配置当前会话的目录覆盖。触屏设备可通过会话的「更多」菜单使用同一入口。通过官方流程新建工作区后，插件会立即提示一次，允许为这个新工作区附加更多目录。**会话创建页**的入口位于**输入框上方**——与 git 分支胶囊同一条 dock 带，左边缘对齐新会话界面的工作区/预设胶囊，点击后面板以锚定在该胶囊上的浮层展开。会话创建页始终只显示**一个**入口：插件注册三个候选座位并选用当前可用的最佳者（上游 `conversation.hero.workspaceExtras` chip > `conversation.input.dock` 行 > 两者皆未声明时的右下角浮动按钮）。打开面板即可：
 
 | 操作 | 行为 |
 | ---- | ---- |
 | 添加目录 | 优先打开宿主组合的官方目录选择器；官方选择器不可用时，依次回退到插件宿主辅助选择器和内置浏览器（路径输入框 + 一级子目录列表 + 可新建文件夹） |
 | 在文件管理器中打开 | 在宿主机器的文件管理器（资源管理器 / Finder）中打开某个已配置目录 |
 | 移除 / 刷新 | 立即生效 |
-| 作用域 | 列表由**该工作区的所有会话共享**（按持久化的 WorkspaceId 存储）；标签页与头部快捷入口看到的是同一份 |
+| 作用域 | 基础列表由**该工作区的所有会话共享**（按持久化的 WorkspaceId 存储）；每个会话默认继承它 |
+| 会话覆盖 | 会话可选择 `继承` 工作区列表、在工作区基础上 `追加` 会话目录并排除部分工作区目录，或完全 `替换`。覆盖配置按会话存储，只影响该会话 |
 | 重新打开面板 | 使用会话级缓存，不产生冗余命令行 |
 
 等价的用户斜杠命令：
@@ -63,6 +64,15 @@ dsh plugin --profile web add dsh-multi-folder
 /multi-folder add "D:\path\to\repo"
 /multi-folder remove "D:\path\to\repo"
 /multi-folder set "D:\a" "D:\b"
+/multi-folder session list
+/multi-folder session inherit
+/multi-folder session extend
+/multi-folder session add "D:\extra"
+/multi-folder session exclude "D:\a"
+/multi-folder session include "D:\a"
+/multi-folder session remove "D:\extra"
+/multi-folder session replace
+/multi-folder session set "D:\x" "D:\y"
 ```
 
 Agent 无需任何额外操作：`read` / `glob` / `grep` 随处可用；`write` / `edit` / `pwsh` / `bash` 在路径（或 `workdir`）落入副目录时自动拦截并以该目录为沙箱根执行。

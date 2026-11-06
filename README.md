@@ -46,14 +46,15 @@ Choose the plugin version that matches your DeepSeek Harness release:
 
 ## Usage
 
-A **Multi-folder tab** appears in the conversation view switcher (next to Chat and Trajectory); a compact button in the session header stays as a shortcut. In the workspace browser, hovering a workspace row reveals a `+` entry that opens the compact workspace-level panel. When you add a workspace through the official flow, the plugin prompts once immediately afterwards so you can attach extra directories to it. A second entry appears on the **session-creation page**: a chip row directly above the composer card (the same band the git-branch chip uses), aligned with the workspace/preset chips of the new-session screen. Clicking it opens the panel as a popover anchored to the chip. Exactly one session-creation entry is ever shown — the plugin registers three candidate seats and elects the best available one (upstream `conversation.hero.workspaceExtras` chip > `conversation.input.dock` row > fixed bottom-right launcher for shells declaring neither). The panel lets you:
+A **Multi-folder tab** appears in the conversation view switcher (next to Chat and Trajectory); a compact button in the session header stays as a shortcut. In the workspace browser, hovering a workspace row reveals a `+` entry that opens the compact workspace-level panel, and hovering a Session row reveals a `⚙` entry for its session-level overlay. The same session action is present in the Session "..." menu on touch devices. When you add a workspace through the official flow, the plugin prompts once immediately afterwards so you can attach extra directories to it. A second entry appears on the **session-creation page**: a chip row directly above the composer card (the same band the git-branch chip uses), aligned with the workspace/preset chips of the new-session screen. Clicking it opens the panel as a popover anchored to the chip. Exactly one session-creation entry is ever shown — the plugin registers three candidate seats and elects the best available one (upstream `conversation.hero.workspaceExtras` chip > `conversation.input.dock` row > fixed bottom-right launcher for shells declaring neither). The panel lets you:
 
 | Action | Behavior |
 | ------ | -------- |
 | Add directory | Opens the shell's official directory picker first. If it is unavailable, the plugin falls back to its host helper and then its built-in browser (path field, one level of child directories, optional new folder) |
 | Open in file manager | Opens the host's file manager (Explorer / Finder) at a configured directory |
 | Remove / refresh | Applies immediately |
-| Scope | The list is **shared by every session of the workspace** (keyed by the durable WorkspaceId); the tab and the header shortcut show the same list |
+| Scope | The base list is **shared by every session of the workspace** (keyed by the durable WorkspaceId); every session inherits it by default |
+| Session overlay | A Session can `inherit` the workspace list, `extend` it with session-only directories and excluded workspace directories, or `replace` it completely. The overlay is stored per Session and only affects that session |
 | Reopen panel | Uses the session cache — no redundant command rows |
 
 Equivalent slash command for the user:
@@ -63,6 +64,15 @@ Equivalent slash command for the user:
 /multi-folder add "D:\path\to\repo"
 /multi-folder remove "D:\path\to\repo"
 /multi-folder set "D:\a" "D:\b"
+/multi-folder session list
+/multi-folder session inherit
+/multi-folder session extend
+/multi-folder session add "D:\extra"
+/multi-folder session exclude "D:\a"
+/multi-folder session include "D:\a"
+/multi-folder session remove "D:\extra"
+/multi-folder session replace
+/multi-folder session set "D:\x" "D:\y"
 ```
 
 The agent needs nothing extra: `read` / `glob` / `grep` work everywhere, and `write` / `edit` / `pwsh` / `bash` are intercepted and re-rooted automatically when the target path (or `workdir`) falls inside a configured secondary directory.
@@ -123,6 +133,8 @@ No build step: the host half is plain ESM and `lib/client.js` is a hand-maintain
 node test/smoke-host.mjs    # host apply smoke test + remote API behavior
 node test/intercept.mjs     # interception / command / notification behavior
 node test/smoke-client.mjs  # client bundle + panel flows (React shim)
+node test/workspace-browser.mjs  # workspace/session row entry points (fake DOM)
+node test/session-overlay.mjs    # session overlay merge + tool interception
 ```
 
 Before modifying `lib/client.js`, see [docs/design.md](docs/design.md) for the bundle contract.

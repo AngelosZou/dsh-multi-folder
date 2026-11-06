@@ -14,8 +14,8 @@ agent informed. No new tools are added.
 
 | Half | File | Role |
 | ---- | ---- | ---- |
-| Host | `lib/index.js` | Config store, tool-pipeline interception, prompt section, notifications, `/multi-folder` command, sessionless `multiFolder/*` remote API (configuration, the browser's `browse`/`makeDir`, and the `@` menu's `listFiles`) |
-| Client | `lib/client.js` | Conversation View tab, session-header shortcut, additive workspace-row entries, a post-create workspace setup prompt, session-creation page entry (input-dock chip, upstream hero chip, or fixed fallback launcher — one at a time), official directory picker with plugin fallbacks, and the companion `@` source |
+| Host | `lib/index.js` | Workspace config store plus per-session overlay, effective-directory merge, tool-pipeline interception, prompt section, notifications, `/multi-folder` command, sessionless `multiFolder/*` remote API |
+| Client | `lib/client.js` | Conversation View tab, session-header shortcut, additive workspace-row and Session-row entries, a post-create workspace setup prompt, session overlay controls (`inherit` / `extend` / `replace`), session-creation page entry, official directory picker with plugin fallbacks, and the companion `@` source |
 
 The package declares both faces: `dsh.bundle.patch` (the host row inserted by
 `cordis.patch.yml`) and `dsh.client` (the web bundle at `exports["./client"]`).
@@ -144,6 +144,20 @@ at apply time can yield `undefined` when the provider row activates later. There
   and persistence. The command channel and the remote channel both call it, so
   the security surface stays identical on both. Core errors carry bare
   messages; each channel adds its own `multi-folder: ` prefix.
+- **Session overlay store:** `<DSH_HOME>/storages/multi-folder/sessions/<sessionId>.json`
+  with `{ version, sessionId, mode, dirs, exclude, updatedAt }`. `mode` is one of
+  `inherit`, `extend`, or `replace`. `exclude` is only meaningful for `extend`
+  and is filtered to directories present in the workspace base. A missing file is
+  plain inheritance.
+- **Effective set:** `inherit` returns the workspace base, `replace` returns the
+  session list, and `extend` returns the base minus `exclude` plus session-only
+  entries, de-duplicated in that order. Tool interception, the system-prompt
+  section, and `@` discovery all consume this merged list, never the base alone.
+- Session overlay commands are session-scoped: `session inherit|extend|replace`,
+  `session add|remove|exclude|include|set`, and `session list`. Mutating commands
+  arm a notice only for the invoking session; workspace mutations still fan out
+  across the whole workspace. An empty `replace` overlay is intentional and does
+  not fall back to the workspace base.
 
 Change notifications fan out to every **live** agent in the same scope
 (`ctx.get('agents').list()`), not only the session that made the change, because
@@ -327,10 +341,12 @@ window.__ModuleLoader__.load({
   panel surface (see the `@` discovery section).
 - UI registrations: `conversation.view` (the management page),
   `conversation.session.header.actions` (transitional session-scoped shortcut),
-  `shell.overlay` panel, `conversation.input.dock` chip row (session-scoped
-  list entry above the composer card — the session-creation page's shipped
-  seat), `shell.overlay` hero launcher (root-scoped fixed-position fallback),
-  and `conversation.hero.workspaceExtras` (upstream slot; see below). One
+  `shell.overlay` panel, `sidebar.workspaces.session.row.action` and
+  `sidebar.workspaces.session.menu.item` (Session-scoped entry points),
+  `conversation.input.dock` chip row (session-scoped list entry above the
+  composer card — the session-creation page's shipped seat), `shell.overlay`
+  hero launcher (root-scoped fixed-position fallback), and
+  `conversation.hero.workspaceExtras` (upstream slot; see below). One
   module-level store is shared by all of them, and only ONE session-creation
   entry ever renders (see "hero seat election").
 - Workspace-browser integration is additive rather than a takeover. A MutationObserver
@@ -340,8 +356,15 @@ window.__ModuleLoader__.load({
   official Add Workspace label (resolved through the official `workspace` locale
   namespace) arms a short-lived signal; a subsequent new
   `WorkspaceId` opens a one-time first-run panel. Automatic default-Workspace
-  initialization therefore does not interrupt the user. The plugin does not replace
-  `sidebar.workspaces`.
+  initialization therefore does not interrupt the user. Homepage grouped Session
+  rows (`[data-sb="session"][data-id]`) receive the same session-level entry
+  through DOM enhancement because that browser does not render the official
+  Session-row slots. The plugin does not replace `sidebar.workspaces`.
+- The Session panel renders three mode buttons (`inherit`, `extend`, `replace`),
+  the workspace base with per-directory exclude/restore actions, the session
+  additions or replacement list, and a compact effective-list preview. Every
+  control sends `/multi-folder session …` through the invoking session's
+  command channel; workspace-level controls still use the workspace endpoints.
 - **Localization (zh / en).** All client copy goes through
   `@deepseek-ai/dsh-client-locale` (always composed by the standard web
   profile). The bundle registers a `multi-folder` dictionary namespace with
