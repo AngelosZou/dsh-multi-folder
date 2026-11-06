@@ -15,7 +15,7 @@ agent informed. No new tools are added.
 | Half | File | Role |
 | ---- | ---- | ---- |
 | Host | `lib/index.js` | Config store, tool-pipeline interception, prompt section, notifications, `/multi-folder` command, sessionless `multiFolder/*` remote API (configuration, the browser's `browse`/`makeDir`, and the `@` menu's `listFiles`) |
-| Client | `lib/client.js` | Conversation View tab (the management surface) plus a compact session-header shortcut; session-creation page entry (input-dock chip, upstream hero chip, or fixed fallback launcher — one at a time), all driving the host through the Remote BFF / shared RPC channel; the owned directory browser behind "Add directory"; the companion `@` source |
+| Client | `lib/client.js` | Conversation View tab, session-header shortcut, additive workspace-row entries, a post-create workspace setup prompt, session-creation page entry (input-dock chip, upstream hero chip, or fixed fallback launcher — one at a time), official directory picker with plugin fallbacks, and the companion `@` source |
 
 The package declares both faces: `dsh.bundle.patch` (the host row inserted by
 `cordis.patch.yml`) and `dsh.client` (the web bundle at `exports["./client"]`).
@@ -325,13 +325,23 @@ window.__ModuleLoader__.load({
   deliberately **not** in that hard list: the `@` source is contributed through
   `ctx.inject(['inputTriggers'], …)`, so shells without that service keep every
   panel surface (see the `@` discovery section).
-- UI registrations: `conversation.session.header.actions` (session-scoped button),
+- UI registrations: `conversation.view` (the management page),
+  `conversation.session.header.actions` (transitional session-scoped shortcut),
   `shell.overlay` panel, `conversation.input.dock` chip row (session-scoped
   list entry above the composer card — the session-creation page's shipped
   seat), `shell.overlay` hero launcher (root-scoped fixed-position fallback),
   and `conversation.hero.workspaceExtras` (upstream slot; see below). One
   module-level store is shared by all of them, and only ONE session-creation
   entry ever renders (see "hero seat election").
+- Workspace-browser integration is additive rather than a takeover. A MutationObserver
+  recognizes the stable anchors `[data-row-key^="workspace:"]` (official tree) and
+  `[data-sb="project"][data-ws]` (homepage grouped list), then inserts one compact
+  row action that opens the workspace-level panel. A capture click handler on the
+  official Add Workspace label (resolved through the official `workspace` locale
+  namespace) arms a short-lived signal; a subsequent new
+  `WorkspaceId` opens a one-time first-run panel. Automatic default-Workspace
+  initialization therefore does not interrupt the user. The plugin does not replace
+  `sidebar.workspaces`.
 - **Localization (zh / en).** All client copy goes through
   `@deepseek-ai/dsh-client-locale` (always composed by the standard web
   profile). The bundle registers a `multi-folder` dictionary namespace with
@@ -356,11 +366,14 @@ window.__ModuleLoader__.load({
     'multiFolder/<op>', { args })` against the sessionless remote endpoints.
     The panel runs in either mode according to how it was opened; mutations
     and refreshes route per mode, and both modes share the same row/error UI.
-- Directory picking: `multiFolder/pick` calls the host's `native` picker with
-  the RPC abort signal, then tries a host OS dialog if that picker fails.
-  A `browse` capability returns `unavailable` immediately, so remote clients
-  open the plugin's browser instead of a dialog on the host. A completed dialog
-  returns a path or `null` on cancellation; closing the panel aborts the request.
+- Directory picking prefers the shell's composed official service:
+  `ctx.uiWorkspace.pickDirectory()` → `remote.directoryPicker.pick`. This lets a
+  native profile use the OS chooser and a browse profile use the official picker.
+  If the official service or endpoint is unavailable, the plugin falls back to its
+  `multiFolder/pick` host helper and then its owned browser. A completed picker
+  returns a path or `null` on cancellation. The official endpoint currently has no
+  client-supplied AbortSignal, so a sequence token invalidates a late result after
+  the panel closes; the legacy `multiFolder/pick` path aborts its request directly.
 - The owned browser's listing rides the **`fs` seam** (`fs.resolve` +
   `fs.listDir`), which every composition provides; only directories are
   returned, hidden entries are flagged, the level is capped at 1000 with a

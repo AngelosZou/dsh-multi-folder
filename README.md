@@ -46,11 +46,11 @@ Choose the plugin version that matches your DeepSeek Harness release:
 
 ## Usage
 
-A **Multi-folder tab** appears in the conversation view switcher (next to Chat and Trajectory); a compact button in the session header stays as a shortcut. A second entry appears on the **session-creation page**: a chip row directly above the composer card (the same band the git-branch chip uses), aligned with the workspace/preset chips of the new-session screen. Clicking it opens the panel as a popover anchored to the chip. Exactly one session-creation entry is ever shown — the plugin registers three candidate seats and elects the best available one (upstream `conversation.hero.workspaceExtras` chip > `conversation.input.dock` row > fixed bottom-right launcher for shells declaring neither). The panel lets you:
+A **Multi-folder tab** appears in the conversation view switcher (next to Chat and Trajectory); a compact button in the session header stays as a shortcut. In the workspace browser, hovering a workspace row reveals a `+` entry that opens the compact workspace-level panel. When you add a workspace through the official flow, the plugin prompts once immediately afterwards so you can attach extra directories to it. A second entry appears on the **session-creation page**: a chip row directly above the composer card (the same band the git-branch chip uses), aligned with the workspace/preset chips of the new-session screen. Clicking it opens the panel as a popover anchored to the chip. Exactly one session-creation entry is ever shown — the plugin registers three candidate seats and elects the best available one (upstream `conversation.hero.workspaceExtras` chip > `conversation.input.dock` row > fixed bottom-right launcher for shells declaring neither). The panel lets you:
 
 | Action | Behavior |
 | ------ | -------- |
-| Add directory | Uses the host's native picker, then its OS dialog on failure; a `browse` capability opens the client browser directly (path field, one level of child directories, optional new folder) |
+| Add directory | Opens the shell's official directory picker first. If it is unavailable, the plugin falls back to its host helper and then its built-in browser (path field, one level of child directories, optional new folder) |
 | Open in file manager | Opens the host's file manager (Explorer / Finder) at a configured directory |
 | Remove / refresh | Applies immediately |
 | Scope | The list is **shared by every session of the workspace** (keyed by the durable WorkspaceId); the tab and the header shortcut show the same list |
