@@ -125,6 +125,7 @@ const sessionRows = [sessionRow]
 
 const document = {
   body: new FakeNode('body'),
+  createElementNS(_ns, tag) { return new FakeNode(tag) },
   querySelector() { return null },
   querySelectorAll(selector) {
     if (selector.includes('data-sb="session"')) return sessionRows
@@ -259,6 +260,8 @@ assert(sessionCalls.some(call => call.sessionId === 's1' && call.line === '/mult
   'the homepage session entry opens the session overlay')
 assert(officialAction.getAttribute('aria-label') === '工作区目录设置（多工作目录）',
   'the row entry carries an accessible localized label')
+assert(officialAction.children[0] && officialAction.children[0].tag === 'svg',
+  'the workspace row entry uses a folder glyph rather than a plus')
 
 const before = listCalls.length
 officialAction.click()

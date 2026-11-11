@@ -950,5 +950,8 @@ const sessionMenuEntry = entryBy('sidebar.workspaces.session.menu.item', 'multi-
 assert(sessionMenuEntry, 'official session menu row registered');
 const sessionMenuButton = renderDeep(sessionMenuEntry.component(withT({ sessionId: 'session-x', displayTitle: 'X', useMenuOpenState: () => [true, () => {}] })));
 assert(sessionMenuButton.type === 'button' && sessionMenuButton.props.role === 'menuitem', 'session menu row renders a menuitem');
+const sessionMenuIcon = renderDeep(sessionMenuButton.children[0]);
+assert(sessionMenuIcon.type === 'svg' && sessionMenuIcon.props['aria-hidden'] === true,
+  'session menu row reuses the decorative folder glyph');
 
 console.log('smoke-client: all assertions passed');
