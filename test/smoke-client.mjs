@@ -196,6 +196,52 @@ const ctx = {
     commands: {
       async execute(sessionId, line, images) {
         calls.push({ sessionId, line, images });
+        if (line === '/multi-folder session list') {
+          return {
+            ok: true,
+            value: {
+              commandId: 's1',
+              result: {
+                kind: 'success',
+                text: 'Session overlay\n[MF:JSON] ' + JSON.stringify({
+                  sessionId: 'session-x',
+                  workspace: 'C:\\workspaces\\primary',
+                  workspaceId: 'w1',
+                  mode: 'inherit',
+                  baseDirs: ['C:\\workspaces\\secondary'],
+                  sessionDirs: [],
+                  excludedDirs: [],
+                  effectiveDirs: ['C:\\workspaces\\secondary'],
+                  dirs: ['C:\\workspaces\\secondary'],
+                  changed: false,
+                }),
+              },
+            },
+          };
+        }
+        if (line.startsWith('/multi-folder session ')) {
+          return {
+            ok: true,
+            value: {
+              commandId: 's2',
+              result: {
+                kind: 'success',
+                text: 'Session overlay\n[MF:JSON] ' + JSON.stringify({
+                  sessionId: 'session-x',
+                  workspace: 'C:\\workspaces\\primary',
+                  workspaceId: 'w1',
+                  mode: 'extend',
+                  baseDirs: ['C:\\workspaces\\secondary'],
+                  sessionDirs: ['C:\\picked\\by\\system'],
+                  excludedDirs: [],
+                  effectiveDirs: ['C:\\workspaces\\secondary', 'C:\\picked\\by\\system'],
+                  dirs: ['C:\\workspaces\\secondary', 'C:\\picked\\by\\system'],
+                  changed: true,
+                }),
+              },
+            },
+          };
+        }
         if (line.includes('list')) {
           return {
             ok: true,
@@ -378,7 +424,7 @@ element.props.onClick(); // open + refresh
 await tick();
 assert(calls.length === 1, 'refresh command fired on open');
 assert(calls[0].sessionId === 'session-x', 'session id passed to remote');
-assert(calls[0].line === '/multi-folder list', 'list line');
+assert(calls[0].line === '/multi-folder session list', 'list line');
 assert(
   Array.isArray(calls[0].images) && calls[0].images.length === 0,
   'execute passes the empty images argument required by DSH 0.1.1',
@@ -422,7 +468,7 @@ const walk = (node) => {
   }
 };
 walk(panelAfter);
-const addButton = buttons.find((b) => JSON.stringify(b.children || []).includes('添加目录'));
+const addButton = buttons.find((b) => JSON.stringify(b.children || []).includes('添加会话目录'));
 assert(addButton, 'add button present');
 const before = calls.length;
 const rpcBeforeBrowse = rpcCalls.length;
@@ -461,7 +507,7 @@ ctx.connection.rpc.call = async (channel, endpoint, payload) => {
 };
 buttons.length = 0;
 walk(renderDeep(panel.component(withT({}))));
-const systemAdd = buttons.find((b) => JSON.stringify(b.children || []).includes('添加目录'));
+const systemAdd = buttons.find((b) => JSON.stringify(b.children || []).includes('添加会话目录'));
 assert(systemAdd, 'add button present');
 const rpcBeforePick = rpcCalls.length;
 const callsBeforePick = calls.length;
@@ -471,10 +517,35 @@ const pickCalls = rpcCalls.slice(rpcBeforePick);
 assert(pickCalls.some((c) => c.endpoint === 'multiFolder/pick'), 'the system picker is asked');
 // The start directory follows the panel: the canned add result above reports the
 // workspace as `W`, and the panel adopts it — so that is what the pick carries.
-assert(pickCalls.find((c) => c.endpoint === 'multiFolder/pick').args.cwd === 'W', 'the pick carries the panel workspace');
+assert(pickCalls.find((c) => c.endpoint === 'multiFolder/pick').args.cwd === 'C:\\workspaces\\primary', 'the pick carries the panel workspace');
 assert(!pickCalls.some((c) => c.endpoint === 'multiFolder/browse'), 'the owned browser stays closed when the system answers');
 assert(calls.length > callsBeforePick && calls[calls.length - 1].line.includes('C:\\picked\\by\\system'), 'the picked directory is committed');
+assert(calls[calls.length - 1].line.startsWith('/multi-folder session add '), 'a picked path is committed to the session overlay');
 ctx.connection.rpc.call = rpcCall;
+
+// Session overlay controls drive the session-scoped command, never the
+// workspace mutation.
+buttons.length = 0;
+walk(renderDeep(panel.component(withT({}))));
+const extendMode = buttons.find((b) => b.children && b.children[0] === '追加到工作区');
+assert(extendMode, 'session extend mode control rendered');
+extendMode.props.onClick();
+await tick();
+assert(calls[calls.length - 1].line === '/multi-folder session extend', 'extend mode writes the session overlay');
+buttons.length = 0;
+walk(renderDeep(panel.component(withT({}))));
+const excludeBase = buttons.find((b) => b.children && b.children[0] === '排除');
+assert(excludeBase, 'workspace directory can be excluded from the session');
+excludeBase.props.onClick();
+await tick();
+assert(calls[calls.length - 1].line === '/multi-folder session exclude "C:\\workspaces\\secondary"', 'exclude writes the session overlay');
+buttons.length = 0;
+walk(renderDeep(panel.component(withT({}))));
+const replaceMode = buttons.find((b) => b.children && b.children[0] === '替换工作区');
+assert(replaceMode, 'session replace mode control rendered');
+replaceMode.props.onClick();
+await tick();
+assert(calls[calls.length - 1].line === '/multi-folder session replace', 'replace mode writes the session overlay');
 
 let finishPendingPick;
 let pendingSignal;
@@ -487,7 +558,7 @@ ctx.connection.rpc.call = (channel, endpoint, payload, signal) => {
 };
 buttons.length = 0;
 walk(renderDeep(panel.component(withT({}))));
-buttons.find((button) => JSON.stringify(button.children || []).includes('添加目录')).props.onClick();
+buttons.find((button) => JSON.stringify(button.children || []).includes('添加会话目录')).props.onClick();
 assert(pendingSignal && !pendingSignal.aborted, 'pending pick carries a live cancellation signal');
 const waitingPanel = renderDeep(panel.component(withT({})));
 assert(JSON.stringify(waitingPanel).includes('等待系统对话框'), 'panel reports the pending pick');
@@ -510,7 +581,7 @@ const enHeader = renderDeep(header.component(withT({ sessionId: 'session-x' })))
 assert(JSON.stringify(enHeader).includes('Multi-folder ▾'), 'header button copy in English');
 const enPanel = renderDeep(panel.component(withT({})));
 const enText = JSON.stringify(enPanel);
-assert(enText.includes('Add directory') && enText.includes('Remove') && enText.includes('Refresh'), 'panel actions in English');
+assert(enText.includes('Add session directory') && enText.includes('Refresh') && enText.includes('Session directory overlay'), 'panel actions in English');
 assert(enText.includes('Workspace:'), 'panel workspace line in English');
 assert(enText.includes('command-execution rights'), 'panel footnote in English');
 locale.setLocale('zh');
@@ -780,6 +851,7 @@ const rows = await refSource.candidates(sessionX, refRequest('probe'));
 assert(rpcListFiles.length === listFilesBefore + 1, 'the @ source calls the discovery endpoint');
 assert(rpcListFiles[listFilesBefore].workspace === 'C:\\workspaces\\primary', 'discovery is keyed by the session workspace');
 assert(rpcListFiles[listFilesBefore].query === 'probe', 'the live query travels to the host');
+assert(rpcListFiles[listFilesBefore].sessionId === 'session-x', '@ discovery carries the session overlay id');
 const fileCall = rpcCalls[rpcCalls.length - 1];
 assert(fileCall.channel === '/api' && fileCall.endpoint === 'multiFolder/listFiles', 'discovery rides the shared RPC channel');
 
@@ -851,5 +923,35 @@ wsRefreshBtn.props.onClick();
 await tick();
 const wsErrPanel = renderDeep(panel.component(withT({})));
 assert(JSON.stringify(wsErrPanel).includes('rpc-boom'), 'workspace-mode RPC failure surfaced');
+
+// Declaring the Conversation View retires the header fallback and registers
+// the full-page management surface.
+declareSlot('conversation.view');
+assert(
+  entryBy('conversation.session.header.actions', 'multi-folder') === undefined,
+  'the header fallback retires once the view is declared',
+);
+const viewEntry = entryBy('conversation.view', 'multi-folder');
+assert(viewEntry, 'conversation view registered');
+renderDeep(viewEntry.component(withT({ sessionId: 'session-x' }))); // effect focuses the store
+const viewEl = renderDeep(viewEntry.component(withT({ sessionId: 'session-x' })));
+assert(JSON.stringify(viewEl).includes('secondary'), 'view renders the shared list');
+assert(JSON.stringify(viewEl).includes('workspace-level') || JSON.stringify(viewEl).includes('工作区级'), 'view labels the workspace scope');
+assert(JSON.stringify(viewEl).includes('本会话') || JSON.stringify(viewEl).includes('This session'), 'view labels the session scope');
+
+// Official Session rows expose a compact hover action and a menu row.
+declareSlot('sidebar.workspaces.session.row.action');
+declareSlot('sidebar.workspaces.session.menu.item');
+const sessionRowEntry = entryBy('sidebar.workspaces.session.row.action', 'multi-folder');
+assert(sessionRowEntry, 'official session row action registered');
+const sessionRowButton = renderDeep(sessionRowEntry.component(withT({ sessionId: 'session-x', displayTitle: 'X' })));
+assert(sessionRowButton.type === 'button' && sessionRowButton.props.title === '会话目录设置（多工作目录）', 'session row action renders an accessible button');
+const sessionMenuEntry = entryBy('sidebar.workspaces.session.menu.item', 'multi-folder');
+assert(sessionMenuEntry, 'official session menu row registered');
+const sessionMenuButton = renderDeep(sessionMenuEntry.component(withT({ sessionId: 'session-x', displayTitle: 'X', useMenuOpenState: () => [true, () => {}] })));
+assert(sessionMenuButton.type === 'button' && sessionMenuButton.props.role === 'menuitem', 'session menu row renders a menuitem');
+const sessionMenuIcon = renderDeep(sessionMenuButton.children[0]);
+assert(sessionMenuIcon.type === 'svg' && sessionMenuIcon.props['aria-hidden'] === true,
+  'session menu row reuses the decorative folder glyph');
 
 console.log('smoke-client: all assertions passed');

@@ -46,14 +46,15 @@ dsh plugin --profile web add dsh-multi-folder
 
 ## 使用
 
-会话头部出现「多工作目录」按钮（英文界面显示 "Multi-folder"）；**会话创建页**的入口位于**输入框上方**——与 git 分支胶囊同一条 dock 带，左边缘对齐新会话界面的工作区/预设胶囊，点击后面板以锚定在该胶囊上的浮层展开。会话创建页始终只显示**一个**入口：插件注册三个候选座位并选用当前可用的最佳者（上游 `conversation.hero.workspaceExtras` chip > `conversation.input.dock` 行 > 两者皆未声明时的右下角浮动按钮）。打开面板即可：
+会话视图切换器中出现「多工作目录」标签页（与「对话」「轨迹」并列；英文界面显示 "Multi-folder"），会话头部保留一个紧凑按钮作为快捷入口；工作区浏览器中，鼠标悬停工作区行时会出现 `+` 设置入口，可直接打开紧凑的工作区级目录面板；悬停会话行时会出现 `⚙` 入口，用于配置当前会话的目录覆盖。触屏设备可通过会话的「更多」菜单使用同一入口。通过官方流程新建工作区后，插件会立即提示一次，允许为这个新工作区附加更多目录。**会话创建页**的入口位于**输入框上方**——与 git 分支胶囊同一条 dock 带，左边缘对齐新会话界面的工作区/预设胶囊，点击后面板以锚定在该胶囊上的浮层展开。会话创建页始终只显示**一个**入口：插件注册三个候选座位并选用当前可用的最佳者（上游 `conversation.hero.workspaceExtras` chip > `conversation.input.dock` 行 > 两者皆未声明时的右下角浮动按钮）。打开面板即可：
 
 | 操作 | 行为 |
 | ---- | ---- |
-| 添加目录 | `native` 使用系统文件夹对话框，失败后尝试宿主对话框；`browse` 直接打开插件自带浏览器（路径输入框 + 一级子目录列表 + 可新建文件夹） |
+| 添加目录 | 优先打开宿主组合的官方目录选择器；官方选择器不可用时，依次回退到插件宿主辅助选择器和内置浏览器（路径输入框 + 一级子目录列表 + 可新建文件夹） |
 | 在文件管理器中打开 | 在宿主机器的文件管理器（资源管理器 / Finder）中打开某个已配置目录 |
 | 移除 / 刷新 | 立即生效 |
-| 切换会话 | 面板自动切换为该会话的副工作目录 |
+| 作用域 | 基础列表由**该工作区的所有会话共享**（按持久化的 WorkspaceId 存储）；每个会话默认继承它 |
+| 会话覆盖 | 会话可选择 `继承` 工作区列表、在工作区基础上 `追加` 会话目录并排除部分工作区目录，或完全 `替换`。覆盖配置按会话存储，只影响该会话 |
 | 重新打开面板 | 使用会话级缓存，不产生冗余命令行 |
 
 等价的用户斜杠命令：
@@ -63,6 +64,15 @@ dsh plugin --profile web add dsh-multi-folder
 /multi-folder add "D:\path\to\repo"
 /multi-folder remove "D:\path\to\repo"
 /multi-folder set "D:\a" "D:\b"
+/multi-folder session list
+/multi-folder session inherit
+/multi-folder session extend
+/multi-folder session add "D:\extra"
+/multi-folder session exclude "D:\a"
+/multi-folder session include "D:\a"
+/multi-folder session remove "D:\extra"
+/multi-folder session replace
+/multi-folder session set "D:\x" "D:\y"
 ```
 
 Agent 无需任何额外操作：`read` / `glob` / `grep` 随处可用；`write` / `edit` / `pwsh` / `bash` 在路径（或 `workdir`）落入副目录时自动拦截并以该目录为沙箱根执行。
@@ -98,7 +108,7 @@ Agent 无需任何额外操作：`read` / `glob` / `grep` 随处可用；`write`
 - **拦截**——监听 `tools/execute` 环绕分派瀑布，对解析路径（或 `workdir`）落在副目录内的 `write` / `edit` / `pwsh` / `bash` 调用短路，并以**换根后的会话站立策略**（`{ ...standingPolicy, workspaceRoot: secondaryDir }`）执行。模式本身不变，因此各种沙箱模式与主工作区的语义天然一致。匹配前先经 `fs.resolve` + `processPath` 规范化，`..`、符号链接与大小写差异均正确处理。
 - **提示词注入**——一个有序 `systemPrompt` 段落，text provider 每次组装按会话求值，仅为配置了副目录的会话渲染。
 - **通知**——命令处理器仅在目录集合实际变化时置位 pending notice；`agent/pre-step`（前置注入进入批次）与 `tools/post-execute`（附加为 `additionalContexts`）两个通道中先触发者消费——均使用框架原生的插件来源 `notice` 上下文。
-- **配置与安全边界**——per-workspace 配置存储于 Agent 沙箱之外的宿主自有目录（`<DSH_HOME>/storages/multi-folder/<workspace-key>.json`）。对配置文件的任何直接 `write`/`edit` 都会收到显式拒绝——**Agent 永远无法自我授予目录，配置权仅属于用户**。详见 [SECURITY.md](SECURITY.md)。
+- **配置与安全边界**——per-workspace 配置存储于 Agent 沙箱之外的宿主自有目录（`<DSH_HOME>/storages/multi-folder/workspaces/<workspaceId>.json`；旧的路径键文件会被读取并迁移）。对该存储目录内任何文件的直接 `write`/`edit` 都会收到显式拒绝——**Agent 永远无法自我授予目录，配置权仅属于用户**。详见 [SECURITY.md](SECURITY.md)。
 - **无会话远程 API**——经 `ctx.typert.register` 注册 `multiFolder` 命名空间（手写 `src-json` 描述符），并以普通对象服务 `multiFolder` 提供；`list`/`add`/`remove`/`set` 以工作区**路径**为键，与 `/multi-folder` 命令共享同一套校验核心，因此会话尚未建立时创建页也能直接配置。`browse`/`makeDir` 服务于自带浏览器；`pick`/`reveal` 负责选择或打开宿主目录。
 - **目录选择**——`multiFolder/pick` 先调用宿主的 `native` 选择器，失败后尝试系统对话框；`browse` 能力直接打开客户端浏览器。关闭面板会取消请求；取消系统对话框不会添加目录。Windows 助手为 `lib/native-picker.ps1`。
 - **`@` 发现**——同一 `fs` seam 的第二种用法：`multiFolder/listFiles` 为已配置目录建立索引（广度优先、按规范化路径去重以免 junction 绕回、排除生成物/依赖目录名、按工作区限量并短 TTL 缓存），客户端再据此注册一个并列的 `@` source。自带 provider 不做任何修改，自带分组也不受影响：触发器注册表以 `(trigger, name)` 为键，每个 source 各渲染一个分组。

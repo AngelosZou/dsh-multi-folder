@@ -14,8 +14,8 @@ agent informed. No new tools are added.
 
 | Half | File | Role |
 | ---- | ---- | ---- |
-| Host | `lib/index.js` | Config store, tool-pipeline interception, prompt section, notifications, `/multi-folder` command, sessionless `multiFolder/*` remote API (configuration, the browser's `browse`/`makeDir`, and the `@` menu's `listFiles`) |
-| Client | `lib/client.js` | Session-header button + overlay panel; session-creation page entry (input-dock chip, upstream hero chip, or fixed fallback launcher — one at a time), all driving the host through the Remote BFF / shared RPC channel; the owned directory browser behind "Add directory"; the companion `@` source |
+| Host | `lib/index.js` | Workspace config store plus per-session overlay, effective-directory merge, tool-pipeline interception, prompt section, notifications, `/multi-folder` command, sessionless `multiFolder/*` remote API |
+| Client | `lib/client.js` | Conversation View tab, session-header shortcut, additive workspace-row and Session-row entries, a post-create workspace setup prompt, session overlay controls (`inherit` / `extend` / `replace`), session-creation page entry, official directory picker with plugin fallbacks, and the companion `@` source |
 
 The package declares both faces: `dsh.bundle.patch` (the host row inserted by
 `cordis.patch.yml`) and `dsh.client` (the web bundle at `exports["./client"]`).
@@ -106,28 +106,63 @@ at apply time can yield `undefined` when the provider row activates later. There
 
 ## Host: configuration store
 
-- Canonical location: `<DSH_HOME>/storages/multi-folder/<workspace-key>.json`
+- Canonical location: `<DSH_HOME>/storages/multi-folder/workspaces/<workspaceId>.json`
   (`DSH_HOME` falls back to `~/.dsh`), i.e. **outside every agent sandbox root**.
+  The file is JSON: `{ version, workspaceId, path, dirs, updatedAt }`.
+- The key is the durable **WorkspaceId**, not a path: a workspace title rename
+  leaves it unchanged, and a session reaching the same project through a
+  symlinked/junctioned ancestor resolves to the same record. The legacy
+  path-keyed file (`<workspace-key>.json`, a bare JSON array) is still read and
+  is **copied** into the identity store on first read; the legacy file stays in
+  place so a headless profile without a workspace registry keeps its old
+  behavior.
+- Scope resolution is synchronous: the plugin scans
+  `ctx.get('workspaceRegistry').list()` for the owning workspace's `sessionIds`.
+  The registry is an optional dependency — when it is absent (headless, ACP), or
+  the session is not attached to one, the scope falls back to the session
+  header's `cwd` and the legacy path-keyed file.
 - Writes happen only from user-initiated flows (the `/multi-folder` command
   handler and the `multiFolder/*` remote endpoints) with an explicit
   `workspace-write` policy rooted at the config directory.
-- A per-process cache keyed by normalized workspace path hydrates lazily (on
-  `agent/created`, `agent/pre-step`, and `tools/execute`). On the interception
-  path hydration is **awaited**, not fire-and-forget: a first call that landed
-  before the config read resolved would otherwise see an empty cache, fall
-  through to the default pipeline, and be fenced against the PRIMARY workspace
-  root — a spurious `[sandbox: file access denied under workspace-write mode]`
-  for a secondary-directory mutation. `loadDirs` caches, so only the first call
-  pays the read. Because `sandbox-policy` realpath-canonicalizes the policy
-  workspace root while hydration is keyed by the session cwd **as spelled in
-  the header**, a workspace reached through a symlinked/junctioned ancestor can
-  spell the two differently; the interception consults BOTH keys (and the
-  config guard checks both config-path spellings) before falling through.
+- A per-process cache keyed by `id:<workspaceId>` or `path:<normalized-path>`
+  hydrates lazily (on `agent/created`, `agent/pre-step`, and `tools/execute`).
+  On the interception path hydration is **awaited**, not fire-and-forget: a
+  first call that landed before the config read resolved would otherwise see an
+  empty cache, fall through to the default pipeline, and be fenced against the
+  PRIMARY workspace root — a spurious
+  `[sandbox: file access denied under workspace-write mode]` for a
+  secondary-directory mutation. `loadDirs` caches, so only the first call pays
+  the read. A legacy path scope still consults the policy root as well, because
+  `sandbox-policy` realpath-canonicalizes the policy workspace root while the
+  header may spell it differently.
+- The config guard rejects any write/edit whose target resolves **inside** the
+  whole `storages/multi-folder/` tree, covering both the identity files and the
+  legacy path-keyed files; `sanitizeDirs` likewise refuses to add the store
+  itself as a secondary directory.
 - One shared **core** (`coreList` / `coreAdd` / `coreRemove` / `coreSet`)
   implements validation, canonicalization, sanitization, cache write-through,
   and persistence. The command channel and the remote channel both call it, so
   the security surface stays identical on both. Core errors carry bare
   messages; each channel adds its own `multi-folder: ` prefix.
+- **Session overlay store:** `<DSH_HOME>/storages/multi-folder/sessions/<sessionId>.json`
+  with `{ version, sessionId, mode, dirs, exclude, updatedAt }`. `mode` is one of
+  `inherit`, `extend`, or `replace`. `exclude` is only meaningful for `extend`
+  and is filtered to directories present in the workspace base. A missing file is
+  plain inheritance.
+- **Effective set:** `inherit` returns the workspace base, `replace` returns the
+  session list, and `extend` returns the base minus `exclude` plus session-only
+  entries, de-duplicated in that order. Tool interception, the system-prompt
+  section, and `@` discovery all consume this merged list, never the base alone.
+- Session overlay commands are session-scoped: `session inherit|extend|replace`,
+  `session add|remove|exclude|include|set`, and `session list`. Mutating commands
+  arm a notice only for the invoking session; workspace mutations still fan out
+  across the whole workspace. An empty `replace` overlay is intentional and does
+  not fall back to the workspace base.
+
+Change notifications fan out to every **live** agent in the same scope
+(`ctx.get('agents').list()`), not only the session that made the change, because
+the directory set is shared by the whole workspace. When the agents service is
+absent, the invoking agent is still notified.
 
 ## Host: sessionless remote API
 
@@ -304,13 +339,32 @@ window.__ModuleLoader__.load({
   deliberately **not** in that hard list: the `@` source is contributed through
   `ctx.inject(['inputTriggers'], …)`, so shells without that service keep every
   panel surface (see the `@` discovery section).
-- UI registrations: `conversation.session.header.actions` (session-scoped button),
-  `shell.overlay` panel, `conversation.input.dock` chip row (session-scoped
-  list entry above the composer card — the session-creation page's shipped
-  seat), `shell.overlay` hero launcher (root-scoped fixed-position fallback),
-  and `conversation.hero.workspaceExtras` (upstream slot; see below). One
+- UI registrations: `conversation.view` (the management page),
+  `conversation.session.header.actions` (transitional session-scoped shortcut),
+  `shell.overlay` panel, `sidebar.workspaces.session.row.action` and
+  `sidebar.workspaces.session.menu.item` (Session-scoped entry points),
+  `conversation.input.dock` chip row (session-scoped list entry above the
+  composer card — the session-creation page's shipped seat), `shell.overlay`
+  hero launcher (root-scoped fixed-position fallback), and
+  `conversation.hero.workspaceExtras` (upstream slot; see below). One
   module-level store is shared by all of them, and only ONE session-creation
   entry ever renders (see "hero seat election").
+- Workspace-browser integration is additive rather than a takeover. A MutationObserver
+  recognizes the stable anchors `[data-row-key^="workspace:"]` (official tree) and
+  `[data-sb="project"][data-ws]` (homepage grouped list), then inserts one compact
+  row action that opens the workspace-level panel. A capture click handler on the
+  official Add Workspace label (resolved through the official `workspace` locale
+  namespace) arms a short-lived signal; a subsequent new
+  `WorkspaceId` opens a one-time first-run panel. Automatic default-Workspace
+  initialization therefore does not interrupt the user. Homepage grouped Session
+  rows (`[data-sb="session"][data-id]`) receive the same session-level entry
+  through DOM enhancement because that browser does not render the official
+  Session-row slots. The plugin does not replace `sidebar.workspaces`.
+- The Session panel renders three mode buttons (`inherit`, `extend`, `replace`),
+  the workspace base with per-directory exclude/restore actions, the session
+  additions or replacement list, and a compact effective-list preview. Every
+  control sends `/multi-folder session …` through the invoking session's
+  command channel; workspace-level controls still use the workspace endpoints.
 - **Localization (zh / en).** All client copy goes through
   `@deepseek-ai/dsh-client-locale` (always composed by the standard web
   profile). The bundle registers a `multi-folder` dictionary namespace with
@@ -335,11 +389,14 @@ window.__ModuleLoader__.load({
     'multiFolder/<op>', { args })` against the sessionless remote endpoints.
     The panel runs in either mode according to how it was opened; mutations
     and refreshes route per mode, and both modes share the same row/error UI.
-- Directory picking: `multiFolder/pick` calls the host's `native` picker with
-  the RPC abort signal, then tries a host OS dialog if that picker fails.
-  A `browse` capability returns `unavailable` immediately, so remote clients
-  open the plugin's browser instead of a dialog on the host. A completed dialog
-  returns a path or `null` on cancellation; closing the panel aborts the request.
+- Directory picking prefers the shell's composed official service:
+  `ctx.uiWorkspace.pickDirectory()` → `remote.directoryPicker.pick`. This lets a
+  native profile use the OS chooser and a browse profile use the official picker.
+  If the official service or endpoint is unavailable, the plugin falls back to its
+  `multiFolder/pick` host helper and then its owned browser. A completed picker
+  returns a path or `null` on cancellation. The official endpoint currently has no
+  client-supplied AbortSignal, so a sequence token invalidates a late result after
+  the panel closes; the legacy `multiFolder/pick` path aborts its request directly.
 - The owned browser's listing rides the **`fs` seam** (`fs.resolve` +
   `fs.listDir`), which every composition provides; only directories are
   returned, hidden entries are flagged, the level is capped at 1000 with a
@@ -385,8 +442,8 @@ window.__ModuleLoader__.load({
     The row stays **in flow** — `display:flex` with the official hero
     row's 20px indent, no absolute positioning — so the framework's list-slot
     arrangement keeps it clear of every other plugin's dock row. It renders
-    only on the session-creation page; an active session keeps its entry in the
-    session header, so the two never appear together.
+    only on the session-creation page; an active session manages the list in
+    its Conversation View tab, so the two never appear together.
   - The **hero chip** registers into `conversation.hero.workspaceExtras` via
     `slots.inject`, which waits for the declaration: with an upstream DSH
     build that declares the slot, the chip renders inline beside the workspace
@@ -407,8 +464,9 @@ window.__ModuleLoader__.load({
   - Clicking any of them opens the panel in workspace mode; without a selected
     workspace the panel shows the "pick a workspace first" hint.
 - Panel placement: one `panelBody(store, t)` function returns the panel's
-  children, spread by whichever wrapper owns the panel — the fixed
-  `shell.overlay` panel (session-header path) or an `AnchoredPanel` popover
+  children, spread by whichever wrapper owns the panel — the Conversation View
+  page (`panelBody(store, t, { view: true })`, no close control), the fixed
+  `shell.overlay` panel (the header shortcut), or an `AnchoredPanel` popover
   rendered by the chip itself (opening upward from the dock row, downward from
   the hero row). `store.anchor` names the owner, and the overlay wrapper stands
   down whenever a chip owns it, so the panel never renders twice.

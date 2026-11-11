@@ -47,7 +47,9 @@ const normalize = (p) => {
   }
   const joined = out.join('/');
   if (/^[A-Za-z]:/.test(joined)) return joined.replace(/\//g, '\\');
-  return joined.replace(/^\/+/, '');
+  // Preserve a POSIX absolute root: the mock serves both Windows and POSIX
+  // spellings, and the plugin's config guard compares absolute paths.
+  return (String(p).startsWith('/') ? '/' : '') + joined.replace(/^\/+/, '');
 };
 
 const configStore = new Map();

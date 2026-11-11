@@ -2,6 +2,42 @@
 
 All notable changes to this project are documented in this file.
 
+## [Unreleased]
+
+### Added
+
+- A Conversation View tab ("Multi-folder") beside Chat and Trajectory. The
+  session-header button remains as a compact shortcut.
+- A compact workspace-directory entry appears on hover in both the official and
+  homepage grouped workspace browsers, without replacing either browser.
+- After a user-initiated workspace is created, the plugin opens a one-time setup
+  panel so additional directories can be attached to the new workspace.
+- Per-session directory overlays (`inherit`, `extend`, `replace`) stored under
+  `storages/multi-folder/sessions/<sessionId>.json`. `extend` supports excluding
+  individual workspace directories.
+- Session-row settings entries in the official browser (hover action and "..."
+  menu) and in the homepage grouped list.
+- Effective-directory merging now drives tool interception, the system-prompt
+  section, and `@` discovery, so a session's overlay applies consistently.
+- Configuration is now keyed by the durable `WorkspaceId`
+  (`storages/multi-folder/workspaces/<workspaceId>.json`): a workspace rename
+  or a different path spelling no longer splits the list, and every session of
+  one workspace shares one record.
+- `multiFolder/*` endpoints accept an optional `workspaceId`.
+
+### Changed
+
+- "Add directory" now prefers the shell's composed official directory picker;
+  the plugin's own host picker and built-in browser remain fallbacks.
+- Change notices fan out to every live session of the workspace, not only the
+  session that made the change.
+- The config write guard covers the whole `storages/multi-folder/` tree.
+
+### Migration
+
+- The legacy path-keyed file is still read and is copied into the identity
+  store on first read; the legacy file stays in place for headless profiles.
+
 ## [0.3.4] — 2026-10-23
 
 ### Fixed
